@@ -209,9 +209,9 @@
         const DEFAULT_TABLE_COL_WIDTH = 120;
         const DEFAULT_TABLE_ROW_HEIGHT = 32;
         const TABLE_MIN_COL_WIDTH = 60;
-        const TABLE_MAX_COL_WIDTH = 360;
+        const TABLE_MAX_COL_WIDTH = Number.MAX_SAFE_INTEGER;
         const TABLE_MIN_ROW_HEIGHT = 24;
-        const TABLE_MAX_ROW_HEIGHT = 120;
+        const TABLE_MAX_ROW_HEIGHT = Number.MAX_SAFE_INTEGER;
         let tableAutosaveTimer = null;
         let tablePendingFocus = null;
         let tableActiveCell = { row: 0, col: 0 };
@@ -327,12 +327,11 @@
                 <tr>
                     ${row.map((cell, colIndex) => `
                         <td class="cell ${rowIndex === 0 && colIndex === 0 ? 'cell-corner' : rowIndex === 0 ? 'cell-header' : colIndex === 0 ? 'cell-side' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
-                            <input
+                            <textarea
                                 data-row="${rowIndex}"
                                 data-col="${colIndex}"
-                                value="${escapeAttribute(cell)}"
                                 style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
-                            />
+                            >${escapeHtml(cell)}</textarea>
                             ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
                             ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
                         </td>
@@ -366,8 +365,8 @@
                     td.cell-header { background: #fef3c7; }
                     td.cell-side { background: #fde68a; }
                     td.cell-corner { background: #fbbf24; }
-                    input { border: none; padding: 6px 8px; font-size: 12px; background: transparent; outline: none; }
-                    input:focus { box-shadow: inset 0 0 0 2px #6366f1; border-radius: 4px; }
+                    textarea { border: none; padding: 6px 8px; font-size: 12px; background: transparent; outline: none; resize: none; overflow: hidden; font-family: inherit; }
+                    textarea:focus { box-shadow: inset 0 0 0 2px #6366f1; border-radius: 4px; }
                     .hint { font-size: 11px; color: #6b7280; padding: 0 14px 10px; background: #fff; border-bottom: 1px solid #e5e7eb; }
                     .col-resizer { position: absolute; right: -3px; top: 0; width: 6px; height: 100%; cursor: col-resize; }
                     .row-resizer { position: absolute; left: 0; bottom: -3px; height: 6px; width: 100%; cursor: row-resize; }
@@ -395,7 +394,7 @@
                         </div>
                         <button id="tw-close" class="btn-close">닫기</button>
                     </div>
-                    <div class="hint">열/행 경계를 마우스로 드래그해 크기를 조절합니다. 셀을 수정하면 자동 저장됩니다.</div>
+                    <div class="hint">열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다. 셀을 수정하면 자동 저장됩니다.</div>
                     <div class="table-wrap">
                         <table>
                             <tbody>
@@ -414,7 +413,7 @@
             doc.getElementById('tw-export').onclick = () => window.exportTableToExcel();
             doc.getElementById('tw-close').onclick = () => tableWindowRef?.close();
 
-            doc.querySelectorAll('#table-window input[data-row]').forEach(input => {
+            doc.querySelectorAll('#table-window textarea[data-row]').forEach(input => {
                 input.addEventListener('mousedown', (event) => {
                     if (event.button !== 0) return;
                     const target = event.target;
@@ -468,6 +467,14 @@
                         if (cleared) applySelectionHighlight(doc, '#table-window');
                         return;
                     }
+                    if (event.key === 'Enter' && event.altKey) {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        insertTableLineBreak(target, rowIndex, colIndex);
+                        return;
+                    }
                     if (event.key === 'Enter') {
                         event.preventDefault();
                         const target = event.target;
@@ -518,7 +525,7 @@
         const focusTableCell = (rowIndex, colIndex, shouldSelect = true) => {
             const targetDoc = tableWindowRef && !tableWindowRef.closed ? tableWindowRef.document : document;
             const containerId = tableWindowRef && !tableWindowRef.closed ? '#table-window' : '#table-modal';
-            const selector = `${containerId} input[data-row="${rowIndex}"][data-col="${colIndex}"]`;
+            const selector = `${containerId} textarea[data-row="${rowIndex}"][data-col="${colIndex}"]`;
             const input = targetDoc.querySelector(selector);
             if (input) {
                 input.focus();
@@ -1100,15 +1107,29 @@
             scheduleTableAutosave();
         };
 
+        const insertTableLineBreak = (target, rowIndex, colIndex) => {
+            const value = target.value ?? '';
+            const start = target.selectionStart ?? value.length;
+            const end = target.selectionEnd ?? start;
+            const nextValue = `${value.slice(0, start)}\n${value.slice(end)}`;
+            target.value = nextValue;
+            const nextPos = start + 1;
+            if (target.setSelectionRange) {
+                target.setSelectionRange(nextPos, nextPos);
+            }
+            tableCaretMap.set(`${rowIndex}:${colIndex}`, { start: nextPos, end: nextPos });
+            window.handleTableCellInput(rowIndex, colIndex, nextValue);
+        };
+
         const applyColumnWidth = (targetDoc, containerSelector, colIndex, width) => {
-            targetDoc.querySelectorAll(`${containerSelector} input[data-col="${colIndex}"]`).forEach(input => {
+            targetDoc.querySelectorAll(`${containerSelector} textarea[data-col="${colIndex}"]`).forEach(input => {
                 input.style.width = `${width}px`;
                 input.style.minWidth = `${width}px`;
             });
         };
 
         const applyRowHeight = (targetDoc, containerSelector, rowIndex, height) => {
-            targetDoc.querySelectorAll(`${containerSelector} input[data-row="${rowIndex}"]`).forEach(input => {
+            targetDoc.querySelectorAll(`${containerSelector} textarea[data-row="${rowIndex}"]`).forEach(input => {
                 input.style.height = `${height}px`;
             });
         };
@@ -2618,13 +2639,12 @@
                 <tr>
                     ${row.map((cell, colIndex) => `
                         <td class="border border-gray-200 p-0 relative ${rowIndex === 0 && colIndex === 0 ? 'bg-amber-200' : rowIndex === 0 ? 'bg-amber-50' : colIndex === 0 ? 'bg-amber-100' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
-                            <input
+                            <textarea
                                 data-row="${rowIndex}"
                                 data-col="${colIndex}"
-                                value="${escapeAttribute(cell)}"
                                 style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
-                                class="w-full px-2 py-1 text-xs bg-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            />
+                                class="w-full px-2 py-1 text-xs bg-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                            >${escapeHtml(cell)}</textarea>
                             ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
                             ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
                         </td>
@@ -2669,7 +2689,7 @@
                                     </button>
                                 </div>
                             </div>
-                            <div class="text-xs text-gray-400">열/행 경계를 마우스로 드래그해 크기를 조절합니다. 셀을 수정하면 자동 저장됩니다.</div>
+                            <div class="text-xs text-gray-400">열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다. 셀을 수정하면 자동 저장됩니다.</div>
                             <div class="border border-gray-200 rounded-lg overflow-auto flex-1 min-h-[200px]">
                                 <table class="w-full border-collapse text-sm">
                                     <tbody>
@@ -2701,7 +2721,7 @@
             document.getElementById('table-save-btn').onclick = () => window.saveTableChanges(false);
             document.getElementById('table-export-btn').onclick = window.exportTableToExcel;
 
-            document.querySelectorAll('#table-modal input[data-row]').forEach(input => {
+            document.querySelectorAll('#table-modal textarea[data-row]').forEach(input => {
                 input.addEventListener('mousedown', (event) => {
                     if (event.button !== 0) return;
                     const target = event.target;
@@ -2753,6 +2773,14 @@
                         event.preventDefault();
                         const cleared = window.handleTableDeleteSelection();
                         if (cleared) applySelectionHighlight(document, '#table-modal');
+                        return;
+                    }
+                    if (event.key === 'Enter' && event.altKey) {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        insertTableLineBreak(target, rowIndex, colIndex);
                         return;
                     }
                     if (event.key === 'Enter') {
