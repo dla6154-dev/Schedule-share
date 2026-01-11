@@ -1,0 +1,3476 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>업무 공유 플랫폼</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Inter 폰트 사용 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        /* 창 드래그 가능 영역 설정 */
+        .window-drag-area {
+             -webkit-app-region: drag;
+             cursor: grab; 
+        }
+        .window-no-drag {
+             -webkit-app-region: no-drag;
+             cursor: default;
+        }
+        /* 드래그 힌트를 위한 스타일 추가 */
+        .drag-hint {
+            height: 8px; /* 드래그 영역 높이 */
+            background-color: rgba(255, 255, 255, 0.2);
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            transition: background-color 0.3s;
+        }
+        .drag-hint:hover {
+            background-color: rgba(255, 255, 255, 0.4);
+        }
+        /* 스크롤바 숨기기 (선택적) */
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .hide-scrollbar {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+        .task-list {
+            /* 헤더 및 푸터 공간을 제외한 높이로 설정 */
+            min-height: 10rem;
+            max-height: calc(100vh - 200px); 
+        }
+        /* 모달이 닫힐 때 DOM에서 제거되도록 처리 */
+        .modal-hidden {
+            display: none;
+        }
+        .col-resizer {
+            position: absolute;
+            right: -3px;
+            top: 0;
+            width: 6px;
+            height: 100%;
+            cursor: col-resize;
+        }
+        .row-resizer {
+            position: absolute;
+            left: 0;
+            bottom: -3px;
+            height: 6px;
+            width: 100%;
+            cursor: row-resize;
+        }
+        .cell-selected {
+            background-color: #c7d2fe;
+        }
+    </style>
+</head>
+<!-- 창 크기 고정을 위해 중앙 정렬 및 적절한 여백을 다시 추가합니다. -->
+<body class="min-h-screen bg-gray-50 flex flex-col items-center justify-start p-4 md:p-8">
+
+    <!-- 애플리케이션 컨테이너: 최대 너비를 max-w-xl (약 1280px)로 통일/고정하고, 창에 꽉 차는 모드는 제거합니다. -->
+    <div id="app-container" class="w-full max-w-xl">
+        <!-- 앱 내용이 여기에 렌더링됩니다. -->
+    </div>
+
+    <!-- Firebase SDK (모듈) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        // [수정] updateDoc import 추가
+        import { getFirestore, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // [IPC 통신을 위한 ipcRenderer 변수 선언]
+        let ipcRenderer = null;
+        if (window.require) {
+             try {
+                // Electron 환경에서 ipcRenderer를 가져옵니다.
+                ipcRenderer = window.require('electron').ipcRenderer;
+            } catch (e) {
+                console.warn("Electron IPC is not available.");
+            }
+        }
+
+
+        // ====================================================================
+        // 1. Firebase 설정 및 전역 변수
+        // ====================================================================
+
+        let appId = null; 
+        
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyCkxPbMl7dqDEC_6XuN6w3IY5WjwGU8xOw",
+            authDomain: "schedule-62efa.firebaseapp.com",
+            projectId: "schedule-62efa",
+            storageBucket: "schedule-62efa.firebasestorage.app",
+            messagingSenderId: "939052806030",
+            appId: "1:939052806030:web:04b2817544ede8013b7edf",
+            measurementId: "G-FBB6X7J1NM"
+        };
+        
+        const initialAuthToken = null; 
+        const firebaseConfig = FIREBASE_CONFIG;
+
+        // 전역 상태
+        let state = {
+            tasks: [], // 모든 공유 업무
+            privateTasks: [], // 개인 업무
+            resolutionMap: new Map(), // 공유 업무의 개인별 완료 상태 (taskId -> { resolved: true/false })
+            notices: [], // 공지사항 목록
+            noticeReadMap: new Map(), // 공지사항 읽음 상태 (noticeId -> true)
+            userId: null,
+            isAuthReady: false,
+            loading: true,
+            statusMessage: '',
+            isTaskModalOpen: false, 
+            isNicknameModalOpen: false, 
+            isNoticeModalOpen: false,
+            noticeSearchTerm: '',
+            isFirebaseError: false,
+            db: null,
+            auth: null,
+            app: null,
+            nickname: null, 
+            unsubscribeProfile: null,
+            unsubscribeShared: null,
+            unsubscribeResolution: null,
+            unsubscribePrivate: null,
+            unsubscribeNotices: null,
+            unsubscribeNoticeReads: null,
+            currentView: 'unresolved', // 'unresolved' | 'resolved'
+            taskScope: 'shared', // 'shared' | 'private' | 'all'
+            isAdmin: false, // ?? [추가] 관리자 모드 상태
+            isAdminModalOpen: false, // ?? [추가] 관리자 비밀번호 모달 상태
+            isMemoModalOpen: false,
+            memoModalContent: '',
+            memoModalTitle: '',
+            // 관리자 메모 수정용 상태
+            isMemoEditModalOpen: false,
+            memoEditTaskId: null,
+            memoEditText: '',
+            memoEditTitle: '',
+            memoEditIsShared: false,
+            isTaskEditModalOpen: false,
+            taskEditId: null,
+            taskEditIsShared: false,
+            taskEditText: '',
+            taskEditDueDate: '',
+            taskEditMemo: '',
+            taskEditAssignee: '',
+            isTableModalOpen: false,
+            tableEditTaskId: null,
+            tableEditIsShared: false,
+            tableEditTitle: '',
+            tableEditData: null,
+            tableEditIsDirty: false,
+            tableEditColumnWidths: null,
+            tableEditRowHeights: null
+        };
+
+        // ====================================================================
+        // 2. Utility (도움) 함수 및 아이콘 설정 (생략)
+        // ====================================================================
+        
+        const Icons = {
+            PlusCircle: `<circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/>`,
+            Trash2: `<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>`,
+            CheckCircle: `<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/>`,
+            Circle: `<circle cx="12" cy="12" r="10"/>`,
+            Share2: `<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>`,
+            User: `<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`,
+            Send: `<line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`,
+            Loader: `<line x1="12" x2="12" y1="2" y2="6"/><line x1="12" x2="12" y1="18" y2="22"/><line x1="4.93" x2="7.76" y1="4.93" y2="7.76"/><line x1="16.24" x2="19.07" y1="16.24" y2="19.07"/><line x1="2" x2="6" y1="12" y2="12"/><line x1="18" x2="22" y1="12" y2="12"/><line x1="4.93" x2="7.76" y1="19.07" y2="16.24"/><line x1="16.24" x2="19.07" y1="7.76" y2="4.93"/>`,
+            AlertTriangle: `<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/>`,
+            X: `<line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/>`,
+            Info: `<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/>`,
+            Bell: `<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>`,
+            Settings: `<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.78 1.46a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.74v.44a2 2 0 0 1-1 1.74l-.15.08a2 2 0 0 0-.73 2.73l.78 1.46a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.78-1.46a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.44a2 2 0 0 1 1-1.74l.15-.08a2 2 0 0 0 .73-2.73l-.78-1.46a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>`,
+            Edit2: `<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 3 21l.5-4.5Z"/><path d="m15 5 4 4"/>`,
+            Table: `<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>`,
+            Save: `<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>`,
+        };
+
+        const createIcon = (name, classes = 'w-5 h-5') => {
+            const svgContent = Icons[name];
+            if (!svgContent) return '';
+            return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}">${svgContent}</svg>`;
+        };
+
+        const DEFAULT_TABLE_ROWS = 3;
+        const DEFAULT_TABLE_COLS = 3;
+        const DEFAULT_TABLE_COL_WIDTH = 120;
+        const DEFAULT_TABLE_ROW_HEIGHT = 32;
+        const TABLE_MIN_COL_WIDTH = 60;
+        const TABLE_MAX_COL_WIDTH = 360;
+        const TABLE_MIN_ROW_HEIGHT = 24;
+        const TABLE_MAX_ROW_HEIGHT = 120;
+        let tableAutosaveTimer = null;
+        let tablePendingFocus = null;
+        let tableActiveCell = { row: 0, col: 0 };
+        let tableWindowRef = null;
+        let tableSelection = null;
+        let tableIsSelecting = false;
+        let tableCaretMap = new Map();
+        let noticeSearchCaret = null;
+        let noticeSearchShouldFocus = false;
+        let noticeSearchIsComposing = false;
+
+        const escapeAttribute = (value) => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+
+        const escapeHtml = (value) => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
+        const createEmptyTableData = (rows, cols) => (
+            Array.from({ length: rows }, () => Array.from({ length: cols }, () => ''))
+        );
+
+        const normalizeTableData = (rawData) => {
+            if (!Array.isArray(rawData) || rawData.length === 0) {
+                return createEmptyTableData(DEFAULT_TABLE_ROWS, DEFAULT_TABLE_COLS);
+            }
+            const maxCols = Math.max(
+                DEFAULT_TABLE_COLS,
+                ...rawData.map(row => Array.isArray(row) ? row.length : 0)
+            );
+            const rows = Math.max(DEFAULT_TABLE_ROWS, rawData.length);
+            const normalized = [];
+            for (let r = 0; r < rows; r++) {
+                const sourceRow = Array.isArray(rawData[r]) ? rawData[r] : [];
+                const row = [];
+                for (let c = 0; c < maxCols; c++) {
+                    row.push(sourceRow[c] ?? '');
+                }
+                normalized.push(row);
+            }
+            return normalized;
+        };
+
+        const normalizeColumnWidths = (colCount, rawWidths) => {
+            const widths = Array.isArray(rawWidths) ? rawWidths.slice(0, colCount) : [];
+            for (let i = widths.length; i < colCount; i += 1) {
+                widths.push(DEFAULT_TABLE_COL_WIDTH);
+            }
+            return widths.map(width => {
+                const numeric = Number(width);
+                if (Number.isFinite(numeric)) {
+                    return Math.min(TABLE_MAX_COL_WIDTH, Math.max(TABLE_MIN_COL_WIDTH, numeric));
+                }
+                return DEFAULT_TABLE_COL_WIDTH;
+            });
+        };
+
+        const normalizeRowHeights = (rowCount, rawHeights) => {
+            const heights = Array.isArray(rawHeights) ? rawHeights.slice(0, rowCount) : [];
+            for (let i = heights.length; i < rowCount; i += 1) {
+                heights.push(DEFAULT_TABLE_ROW_HEIGHT);
+            }
+            return heights.map(height => {
+                const numeric = Number(height);
+                if (Number.isFinite(numeric)) {
+                    return Math.min(TABLE_MAX_ROW_HEIGHT, Math.max(TABLE_MIN_ROW_HEIGHT, numeric));
+                }
+                return DEFAULT_TABLE_ROW_HEIGHT;
+            });
+        };
+
+        const extractTableRows = (tablePayload) => {
+            if (!tablePayload) return null;
+            if (Array.isArray(tablePayload?.rows)) {
+                return tablePayload.rows.map(row => Array.isArray(row?.cells) ? row.cells : []);
+            }
+            if (Array.isArray(tablePayload?.data)) {
+                return tablePayload.data;
+            }
+            if (Array.isArray(tablePayload)) {
+                return tablePayload;
+            }
+            return null;
+        };
+
+        const serializeTableRows = (tableData) => (
+            normalizeTableData(tableData).map(row => ({ cells: row.map(cell => String(cell ?? '')) }))
+        );
+
+        const escapeCsvValue = (value) => {
+            const stringValue = String(value ?? '');
+            if (/[",\r\n]/.test(stringValue)) {
+                return `"${stringValue.replace(/"/g, '""')}"`;
+            }
+            return stringValue;
+        };
+
+        const renderTableWindow = () => {
+            if (!tableWindowRef || tableWindowRef.closed) return;
+            if (!state.tableEditTaskId || !state.tableEditData) return;
+
+            const tableData = normalizeTableData(state.tableEditData);
+            const columnWidths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
+            const rowHeights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
+
+            const rowsHtml = tableData.map((row, rowIndex) => `
+                <tr>
+                    ${row.map((cell, colIndex) => `
+                        <td class="cell ${rowIndex === 0 && colIndex === 0 ? 'cell-corner' : rowIndex === 0 ? 'cell-header' : colIndex === 0 ? 'cell-side' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
+                            <input
+                                data-row="${rowIndex}"
+                                data-col="${colIndex}"
+                                value="${escapeAttribute(cell)}"
+                                style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
+                            />
+                            ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
+                            ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
+                        </td>
+                    `).join('')}
+                </tr>
+            `).join('');
+
+            const doc = tableWindowRef.document;
+            doc.title = '표 편집';
+            doc.head.innerHTML = `
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    :root { color-scheme: light; }
+                    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #f5f5f7; color: #111827; }
+                    .wrap { height: 100vh; display: flex; flex-direction: column; }
+                    header { padding: 14px 18px; background: #4f46e5; color: #fff; }
+                    header h1 { margin: 0; font-size: 18px; }
+                    header p { margin: 4px 0 0; font-size: 12px; opacity: 0.85; }
+                    .controls { padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fff; border-bottom: 1px solid #e5e7eb; }
+                    .controls .group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+                    button { border: none; border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+                    .btn-indigo { background: #e0e7ff; color: #3730a3; }
+                    .btn-save { background: #4f46e5; color: #fff; padding: 6px 8px; display: inline-flex; align-items: center; gap: 6px; }
+                    .btn-export { background: #d1fae5; color: #065f46; }
+                    .btn-close { background: #fee2e2; color: #991b1b; margin-left: auto; }
+                    .table-wrap { flex: 1; overflow: auto; padding: 12px 14px 18px; }
+                    table { border-collapse: collapse; width: max-content; background: #fff; }
+                    td.cell { border: 1px solid #e5e7eb; padding: 0; background: #fff; position: relative; }
+                    td.cell.cell-selected { background: #c7d2fe; }
+                    td.cell-header { background: #fef3c7; }
+                    td.cell-side { background: #fde68a; }
+                    td.cell-corner { background: #fbbf24; }
+                    input { border: none; padding: 6px 8px; font-size: 12px; background: transparent; outline: none; }
+                    input:focus { box-shadow: inset 0 0 0 2px #6366f1; border-radius: 4px; }
+                    .hint { font-size: 11px; color: #6b7280; padding: 0 14px 10px; background: #fff; border-bottom: 1px solid #e5e7eb; }
+                    .col-resizer { position: absolute; right: -3px; top: 0; width: 6px; height: 100%; cursor: col-resize; }
+                    .row-resizer { position: absolute; left: 0; bottom: -3px; height: 6px; width: 100%; cursor: row-resize; }
+                    svg { width: 16px; height: 16px; }
+                </style>
+            `;
+
+            doc.body.innerHTML = `
+                <div id="table-window" class="wrap">
+                    <header>
+                        <h1>표 편집</h1>
+                        <p>업무: ${state.tableEditTitle || ''}</p>
+                    </header>
+                    <div class="controls">
+                        <div class="group">
+                            <button id="tw-add-row" class="btn-indigo">행 추가</button>
+                            <button id="tw-add-col" class="btn-indigo">열 추가</button>
+                            <button id="tw-remove-row" class="btn-indigo">행 제거</button>
+                            <button id="tw-remove-col" class="btn-indigo">열 제거</button>
+                            <button id="tw-save" class="btn-save" title="표 저장">
+                                ${createIcon('Save', 'w-4 h-4')}
+                                저장
+                            </button>
+                            <button id="tw-export" class="btn-export">엑셀로 내보내기</button>
+                        </div>
+                        <button id="tw-close" class="btn-close">닫기</button>
+                    </div>
+                    <div class="hint">열/행 경계를 마우스로 드래그해 크기를 조절합니다. 셀을 수정하면 자동 저장됩니다.</div>
+                    <div class="table-wrap">
+                        <table>
+                            <tbody>
+                                ${rowsHtml}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+
+            doc.getElementById('tw-add-row').onclick = () => window.handleTableAddRow();
+            doc.getElementById('tw-add-col').onclick = () => window.handleTableAddColumn();
+            doc.getElementById('tw-remove-row').onclick = () => window.removeSelectedRows();
+            doc.getElementById('tw-remove-col').onclick = () => window.removeSelectedColumns();
+            doc.getElementById('tw-save').onclick = () => window.saveTableChanges(false);
+            doc.getElementById('tw-export').onclick = () => window.exportTableToExcel();
+            doc.getElementById('tw-close').onclick = () => tableWindowRef?.close();
+
+            doc.querySelectorAll('#table-window input[data-row]').forEach(input => {
+                input.addEventListener('mousedown', (event) => {
+                    if (event.button !== 0) return;
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableIsSelecting = true;
+                    setTableSelection({ startRow: rowIndex, endRow: rowIndex, startCol: colIndex, endCol: colIndex }, doc, '#table-window');
+                });
+                input.addEventListener('focus', (event) => {
+                    const target = event.target;
+                    tableActiveCell = {
+                        row: Number(target.dataset.row),
+                        col: Number(target.dataset.col)
+                    };
+                    if (!tableIsSelecting) {
+                        clearTableSelection(doc, '#table-window');
+                    }
+                });
+                input.addEventListener('mouseover', (event) => {
+                    if (!tableIsSelecting || !tableSelection) return;
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    setTableSelection({ ...tableSelection, endRow: rowIndex, endCol: colIndex }, doc, '#table-window');
+                });
+                input.addEventListener('input', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableCaretMap.set(`${rowIndex}:${colIndex}`, {
+                        start: target.selectionStart ?? 0,
+                        end: target.selectionEnd ?? 0
+                    });
+                    clearTableSelection(doc, '#table-window');
+                    window.handleTableCellInput(rowIndex, colIndex, target.value);
+                });
+                input.addEventListener('paste', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    const pasteText = event.clipboardData?.getData('text');
+                    if (pasteText) {
+                        event.preventDefault();
+                        window.handleTablePaste(rowIndex, colIndex, pasteText);
+                    }
+                });
+                input.addEventListener('keydown', (event) => {
+                    if ((event.key === 'Delete' || event.key === 'Backspace') && isMultiCellSelection(tableSelection)) {
+                        event.preventDefault();
+                        const cleared = window.handleTableDeleteSelection();
+                        if (cleared) applySelectionHighlight(doc, '#table-window');
+                        return;
+                    }
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        window.handleTableEnterKey(rowIndex, colIndex);
+                    }
+                    if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        window.handleTableArrowKey(rowIndex, colIndex, event.key);
+                    }
+                });
+                input.addEventListener('click', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableCaretMap.set(`${rowIndex}:${colIndex}`, {
+                        start: target.selectionStart ?? 0,
+                        end: target.selectionEnd ?? 0
+                    });
+                    if (!tableIsSelecting) {
+                        clearTableSelection(doc, '#table-window');
+                    }
+                });
+            });
+
+            doc.addEventListener('mouseup', () => {
+                tableIsSelecting = false;
+            });
+
+            if (tablePendingFocus) {
+                const { row, col } = tablePendingFocus;
+                if (focusTableCell(row, col)) {
+                    tablePendingFocus = null;
+                }
+            }
+
+            attachTableResizeHandlers(doc, '#table-window');
+            applySelectionHighlight(doc, '#table-window');
+            if (tableActiveCell) {
+                focusTableCell(tableActiveCell.row, tableActiveCell.col, false);
+            }
+        };
+
+        const focusTableCell = (rowIndex, colIndex, shouldSelect = true) => {
+            const targetDoc = tableWindowRef && !tableWindowRef.closed ? tableWindowRef.document : document;
+            const containerId = tableWindowRef && !tableWindowRef.closed ? '#table-window' : '#table-modal';
+            const selector = `${containerId} input[data-row="${rowIndex}"][data-col="${colIndex}"]`;
+            const input = targetDoc.querySelector(selector);
+            if (input) {
+                input.focus();
+                if (shouldSelect) {
+                    input.select();
+                } else {
+                    const caretKey = `${rowIndex}:${colIndex}`;
+                    const caret = tableCaretMap.get(caretKey);
+                    if (caret && typeof input.setSelectionRange === 'function') {
+                        input.setSelectionRange(caret.start, caret.end);
+                    }
+                }
+                return true;
+            }
+            return false;
+        };
+
+        const normalizeSelection = (selection) => {
+            if (!selection) return null;
+            const startRow = Math.min(selection.startRow, selection.endRow);
+            const endRow = Math.max(selection.startRow, selection.endRow);
+            const startCol = Math.min(selection.startCol, selection.endCol);
+            const endCol = Math.max(selection.startCol, selection.endCol);
+            return { startRow, endRow, startCol, endCol };
+        };
+
+        const isMultiCellSelection = (selection) => {
+            const normalized = normalizeSelection(selection);
+            if (!normalized) return false;
+            return normalized.startRow !== normalized.endRow || normalized.startCol !== normalized.endCol;
+        };
+
+        const applySelectionHighlight = (targetDoc, containerSelector) => {
+            targetDoc.querySelectorAll(`${containerSelector} td[data-row]`).forEach(cell => {
+                cell.classList.remove('cell-selected');
+            });
+            const selection = normalizeSelection(tableSelection);
+            if (!selection) return;
+            for (let r = selection.startRow; r <= selection.endRow; r += 1) {
+                for (let c = selection.startCol; c <= selection.endCol; c += 1) {
+                    const cell = targetDoc.querySelector(`${containerSelector} td[data-row="${r}"][data-col="${c}"]`);
+                    if (cell) cell.classList.add('cell-selected');
+                }
+            }
+        };
+
+        const setTableSelection = (selection, targetDoc, containerSelector) => {
+            tableSelection = selection;
+            applySelectionHighlight(targetDoc, containerSelector);
+        };
+
+        const clearTableSelection = (targetDoc, containerSelector) => {
+            tableSelection = null;
+            applySelectionHighlight(targetDoc, containerSelector);
+        };
+
+        window.clearTableSelectionAll = () => {
+            if (tableWindowRef && !tableWindowRef.closed) {
+                applySelectionHighlight(tableWindowRef.document, '#table-window');
+            }
+            applySelectionHighlight(document, '#table-modal');
+        };
+
+        const getDueDateInfo = (dateString) => {
+            if (!dateString) return { formattedDate: '마감일 없음', statusText: '날짜 미지정', isLate: false };
+            
+            const date = new Date(dateString);
+            const now = new Date();
+            
+            const dueDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+            const diffTime = dueDay - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            let statusText;
+            let isLate = diffDays < 0;
+
+            if (diffDays === 0) {
+                statusText = 'D-DAY';
+            } else if (diffDays > 0) {
+                statusText = `D-${diffDays}`;
+            } else { 
+                statusText = `D+${Math.abs(diffDays)}`;
+            }
+
+            const formattedDate = `${date.getFullYear()}. ${String(date.getMonth() + 1).padStart(2, '0')}. ${String(date.getDate()).padStart(2, '0')}.`;
+            
+            return { formattedDate, statusText, isLate };
+        };
+
+        const getNoticeMillis = (notice) => {
+            const createdAt = notice?.createdAt;
+            if (createdAt?.toDate) return createdAt.toDate().getTime();
+            if (createdAt instanceof Date) return createdAt.getTime();
+            if (typeof createdAt === 'number') return createdAt;
+            return 0;
+        };
+
+        const formatNoticeDate = (notice) => {
+            const createdAt = notice?.createdAt;
+            const date = createdAt?.toDate ? createdAt.toDate() : createdAt instanceof Date ? createdAt : null;
+            if (!date) return '날짜 없음';
+            return `${date.getFullYear()}. ${String(date.getMonth() + 1).padStart(2, '0')}. ${String(date.getDate()).padStart(2, '0')}.`;
+        };
+
+
+        const setState = (newState) => {
+            state = { ...state, ...newState };
+            renderApp();
+            if (tableWindowRef && !tableWindowRef.closed) {
+                renderTableWindow();
+            }
+        };
+        // 모듈 스코프라서 전역 접근이 필요할 때를 대비해 window에 바인딩
+        window.setState = setState;
+        
+        /**
+         * 뷰를 전환하는 함수
+         */
+        window.changeView = (view) => {
+            if (view !== 'unresolved' && view !== 'resolved') return;
+            setState({ currentView: view });
+        };
+
+        window.changeScope = (scope) => {
+            if (scope !== 'shared' && scope !== 'private' && scope !== 'all') return;
+            setState({ taskScope: scope });
+        };
+
+        /**
+         * 메모 모달 열기/닫기
+         */
+        window.openMemoModal = (taskId) => {
+            const allTasks = [...state.tasks, ...state.privateTasks];
+            const targetTask = allTasks.find(t => t.id === taskId);
+            if (!targetTask || !targetTask.memo) return;
+            setState({
+                isMemoModalOpen: true,
+                memoModalContent: targetTask.memo,
+                memoModalTitle: targetTask.text || '메모'
+            });
+        };
+
+        const closeMemoModal = () => {
+            setState({
+                isMemoModalOpen: false,
+                memoModalContent: '',
+                memoModalTitle: ''
+            });
+        };
+
+        /**
+         * 관리자 메모 수정 모달 열기/닫기
+         */
+        window.openMemoEditModal = (taskId, isShared) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 메모를 수정할 수 있습니다." });
+                return;
+            }
+            const targetList = isShared ? state.tasks : state.privateTasks;
+            const targetTask = targetList.find(t => t.id === taskId);
+            if (!targetTask) return;
+            setState({
+                isMemoEditModalOpen: true,
+                memoEditTaskId: taskId,
+                memoEditIsShared: isShared,
+                memoEditText: targetTask.memo || '',
+                memoEditTitle: targetTask.text || '메모 수정'
+            });
+        };
+
+        const closeMemoEditModal = () => {
+            setState({
+                isMemoEditModalOpen: false,
+                memoEditTaskId: null,
+                memoEditIsShared: false,
+                memoEditText: '',
+                memoEditTitle: ''
+            });
+        };
+
+        /**
+         * 관리자 업무 수정 모달 열기/닫기
+         */
+        window.openTaskEditModal = (taskId, isShared) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 업무를 수정할 수 있습니다." });
+                return;
+            }
+            const targetList = isShared ? state.tasks : state.privateTasks;
+            const targetTask = targetList.find(t => t.id === taskId);
+            if (!targetTask) return;
+            setState({
+                isTaskEditModalOpen: true,
+                taskEditId: taskId,
+                taskEditIsShared: isShared,
+                taskEditText: targetTask.text || '',
+                taskEditDueDate: targetTask.dueDate || '',
+                taskEditMemo: targetTask.memo || '',
+                taskEditAssignee: targetTask.assignee || ''
+            });
+        };
+
+        const closeTaskEditModal = () => {
+            setState({
+                isTaskEditModalOpen: false,
+                taskEditId: null,
+                taskEditIsShared: false,
+                taskEditText: '',
+                taskEditDueDate: '',
+                taskEditMemo: '',
+                taskEditAssignee: ''
+            });
+        };
+
+        /**
+         * 공지사항 모달 열기/닫기
+         */
+        window.openNoticeModal = () => {
+            setState({
+                isNoticeModalOpen: true,
+                noticeSearchTerm: '',
+                statusMessage: ''
+            });
+        };
+
+        const closeNoticeModal = () => {
+            setState({
+                isNoticeModalOpen: false,
+                noticeSearchTerm: '',
+                statusMessage: ''
+            });
+        };
+
+        window.openNoticeEditorWindow = (mode, noticeId = null) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 공지사항을 등록/수정할 수 있습니다." });
+                return;
+            }
+
+            const editingNotice = mode === 'edit'
+                ? state.notices.find(item => item.id === noticeId)
+                : null;
+
+            if (mode === 'edit' && !editingNotice) {
+                setState({ statusMessage: "수정할 공지사항을 찾을 수 없습니다." });
+                return;
+            }
+
+            const noticeWindow = window.open('', `notice-editor-${noticeId || 'new'}`, 'width=760,height=640,resizable=yes,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes');
+            if (!noticeWindow) {
+                setState({ statusMessage: '팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.' });
+                return;
+            }
+
+            const titleValue = escapeHtml(editingNotice?.title || '');
+            const contentValue = escapeHtml(editingNotice?.content || '');
+
+            noticeWindow.document.title = mode === 'edit' ? '공지사항 수정' : '공지사항 등록';
+            noticeWindow.document.head.innerHTML = `
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #f9fafb; color: #111827; }
+                    .wrap { min-height: 100vh; display: flex; flex-direction: column; }
+                    header { padding: 16px 20px; background: #111827; color: #fff; }
+                    header h1 { margin: 0; font-size: 20px; }
+                    .content { padding: 20px; }
+                    .card { background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; padding: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+                    label { display: block; font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 6px; }
+                    input, textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; font-size: 14px; font-family: inherit; }
+                    textarea { min-height: 220px; resize: vertical; }
+                    button { border: none; border-radius: 8px; padding: 10px 14px; font-size: 14px; cursor: pointer; }
+                    .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+                    .btn-primary { background: #4f46e5; color: #fff; }
+                    .btn-secondary { background: #e5e7eb; color: #111827; }
+                </style>
+            `;
+            noticeWindow.document.body.innerHTML = `
+                <div class="wrap">
+                    <header>
+                        <h1>${mode === 'edit' ? '공지사항 수정' : '공지사항 등록'}</h1>
+                    </header>
+                    <div class="content">
+                        <div class="card">
+                            <form id="notice-editor-form">
+                                <div style="margin-bottom: 14px;">
+                                    <label for="notice-editor-title">공지 제목</label>
+                                    <input id="notice-editor-title" type="text" maxlength="50" value="${titleValue}" placeholder="공지 제목" required />
+                                </div>
+                                <div>
+                                    <label for="notice-editor-content">공지 내용</label>
+                                    <textarea id="notice-editor-content" placeholder="공지 내용을 입력하세요" required>${contentValue}</textarea>
+                                </div>
+                                <div class="actions">
+                                    <button type="button" id="notice-editor-cancel" class="btn-secondary">취소</button>
+                                    <button type="submit" id="notice-editor-submit" class="btn-primary">${mode === 'edit' ? '수정 저장' : '등록'}</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const editorDoc = noticeWindow.document;
+            const form = editorDoc.getElementById('notice-editor-form');
+            const cancelButton = editorDoc.getElementById('notice-editor-cancel');
+            const submitButton = editorDoc.getElementById('notice-editor-submit');
+
+            cancelButton.addEventListener('click', () => noticeWindow.close());
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                submitButton.disabled = true;
+                submitButton.textContent = mode === 'edit' ? '저장 중...' : '등록 중...';
+                const title = editorDoc.getElementById('notice-editor-title').value;
+                const content = editorDoc.getElementById('notice-editor-content').value;
+                const success = await window.handleSaveNoticeFromEditor(mode, noticeId || '', title, content);
+                if (success) {
+                    noticeWindow.close();
+                    return;
+                }
+                submitButton.disabled = false;
+                submitButton.textContent = mode === 'edit' ? '수정 저장' : '등록';
+            });
+            noticeWindow.focus();
+        };
+
+        window.openNoticeWindow = (noticeId) => {
+            const notice = state.notices.find(item => item.id === noticeId);
+            if (!notice) return;
+
+            const noticeWindow = window.open('', `notice-${noticeId}`, 'width=760,height=600,resizable=yes,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes');
+            if (!noticeWindow) {
+                setState({ statusMessage: '팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.' });
+                return;
+            }
+
+            const safeTitle = escapeHtml(notice.title || '공지사항');
+            const safeContent = escapeHtml(notice.content || '내용이 없습니다.').replace(/\n/g, '<br />');
+            const createdAtLabel = formatNoticeDate(notice);
+
+            noticeWindow.document.title = '공지사항';
+            noticeWindow.document.head.innerHTML = `
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #f9fafb; color: #111827; }
+                    .wrap { min-height: 100vh; display: flex; flex-direction: column; }
+                    header { padding: 16px 20px; background: #111827; color: #fff; }
+                    header h1 { margin: 0; font-size: 20px; }
+                    header p { margin: 6px 0 0; font-size: 12px; opacity: 0.8; }
+                    .content { padding: 20px; }
+                    .card { background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; padding: 18px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+                    .title { font-size: 18px; font-weight: 700; margin: 0 0 8px; }
+                    .body { font-size: 14px; line-height: 1.6; color: #1f2937; white-space: normal; }
+                </style>
+            `;
+            noticeWindow.document.body.innerHTML = `
+                <div class="wrap">
+                    <header>
+                        <h1>공지사항</h1>
+                        <p>${createdAtLabel}</p>
+                    </header>
+                    <div class="content">
+                        <div class="card">
+                            <div class="title">${safeTitle}</div>
+                            <div class="body">${safeContent}</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            noticeWindow.focus();
+            window.handleReadNotice(noticeId);
+        };
+
+        /**
+         * 표 모달 열기/닫기
+         */
+        window.openTableModal = (taskId, isShared) => {
+            const targetList = isShared ? state.tasks : state.privateTasks;
+            const targetTask = targetList.find(t => t.id === taskId);
+            if (!targetTask) return;
+            const tableData = normalizeTableData(extractTableRows(targetTask.table));
+            const columnWidths = normalizeColumnWidths(tableData[0].length, targetTask.table?.columnWidths);
+            const rowHeights = normalizeRowHeights(tableData.length, targetTask.table?.rowHeights);
+            tableActiveCell = { row: 0, col: 0 };
+            setState({
+                isTableModalOpen: true,
+                tableEditTaskId: taskId,
+                tableEditIsShared: isShared,
+                tableEditTitle: targetTask.text || '표 편집',
+                tableEditData: tableData,
+                tableEditIsDirty: false,
+                tableEditColumnWidths: columnWidths,
+                tableEditRowHeights: rowHeights
+            });
+        };
+
+        window.openTableWindow = (taskId, isShared) => {
+            const targetList = isShared ? state.tasks : state.privateTasks;
+            const targetTask = targetList.find(t => t.id === taskId);
+            if (!targetTask) return;
+            const tableData = normalizeTableData(extractTableRows(targetTask.table));
+            const columnWidths = normalizeColumnWidths(tableData[0].length, targetTask.table?.columnWidths);
+            const rowHeights = normalizeRowHeights(tableData.length, targetTask.table?.rowHeights);
+            tableActiveCell = { row: 0, col: 0 };
+            setState({
+                isTableModalOpen: false,
+                tableEditTaskId: taskId,
+                tableEditIsShared: isShared,
+                tableEditTitle: targetTask.text || '표 편집',
+                tableEditData: tableData,
+                tableEditIsDirty: false,
+                tableEditColumnWidths: columnWidths,
+                tableEditRowHeights: rowHeights
+            });
+
+            if (!tableWindowRef || tableWindowRef.closed) {
+                tableWindowRef = window.open('', 'table-editor', 'width=920,height=680,resizable=yes,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes');
+                if (!tableWindowRef) {
+                    setState({ statusMessage: '팝업이 차단되었습니다. 팝업 허용 후 다시 시도해주세요.' });
+                    return;
+                }
+                tableWindowRef.onbeforeunload = () => {
+                    tableWindowRef = null;
+                };
+            }
+            renderTableWindow();
+            tableWindowRef.focus();
+        };
+
+        const closeTableModal = () => {
+            if (tableAutosaveTimer) {
+                clearTimeout(tableAutosaveTimer);
+                tableAutosaveTimer = null;
+            }
+            setState({
+                isTableModalOpen: false,
+                tableEditTaskId: null,
+                tableEditIsShared: false,
+                tableEditTitle: '',
+                tableEditData: null,
+                tableEditIsDirty: false,
+                tableEditColumnWidths: null,
+                tableEditRowHeights: null
+            });
+        };
+
+        const scheduleTableAutosave = () => {
+            if (tableAutosaveTimer) clearTimeout(tableAutosaveTimer);
+            tableAutosaveTimer = setTimeout(() => {
+                window.saveTableChanges(true);
+            }, 600);
+        };
+
+        window.handleTableCellInput = (rowIndex, colIndex, value) => {
+            if (!state.tableEditData || !state.tableEditData[rowIndex]) return;
+            state.tableEditData[rowIndex][colIndex] = value;
+            state.tableEditIsDirty = true;
+            scheduleTableAutosave();
+        };
+
+        window.handleTableAddRow = () => {
+            const currentData = normalizeTableData(state.tableEditData);
+            const colCount = currentData[0].length;
+            currentData.push(Array.from({ length: colCount }, () => ''));
+            const currentRowHeights = normalizeRowHeights(currentData.length - 1, state.tableEditRowHeights);
+            currentRowHeights.push(DEFAULT_TABLE_ROW_HEIGHT);
+            setState({
+                tableEditData: currentData,
+                tableEditIsDirty: true,
+                tableEditRowHeights: currentRowHeights
+            });
+            scheduleTableAutosave();
+        };
+
+        window.handleTableAddColumn = () => {
+            const currentData = normalizeTableData(state.tableEditData);
+            currentData.forEach(row => row.push(''));
+            const currentColumnWidths = normalizeColumnWidths(currentData[0].length - 1, state.tableEditColumnWidths);
+            currentColumnWidths.push(DEFAULT_TABLE_COL_WIDTH);
+            setState({
+                tableEditData: currentData,
+                tableEditIsDirty: true,
+                tableEditColumnWidths: currentColumnWidths
+            });
+            scheduleTableAutosave();
+        };
+
+        window.handleTableEnterKey = (rowIndex, colIndex) => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const nextRowIndex = rowIndex + 1;
+            if (nextRowIndex >= tableData.length) {
+                tablePendingFocus = { row: nextRowIndex, col: colIndex };
+                window.handleTableAddRow();
+                return;
+            }
+            if (!focusTableCell(nextRowIndex, colIndex)) {
+                tablePendingFocus = { row: nextRowIndex, col: colIndex };
+            }
+        };
+
+        window.handleTableArrowKey = (rowIndex, colIndex, key) => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const maxRow = tableData.length - 1;
+            const maxCol = tableData[0].length - 1;
+            let nextRow = rowIndex;
+            let nextCol = colIndex;
+
+            if (key === 'ArrowUp') nextRow = Math.max(0, rowIndex - 1);
+            if (key === 'ArrowDown') nextRow = rowIndex + 1;
+            if (key === 'ArrowLeft') nextCol = Math.max(0, colIndex - 1);
+            if (key === 'ArrowRight') nextCol = colIndex + 1;
+
+            if (key === 'ArrowDown' && nextRow > maxRow) {
+                tablePendingFocus = { row: nextRow, col: nextCol };
+                window.handleTableAddRow();
+                return;
+            }
+            if (key === 'ArrowRight' && nextCol > maxCol) {
+                tablePendingFocus = { row: nextRow, col: nextCol };
+                window.handleTableAddColumn();
+                return;
+            }
+            focusTableCell(nextRow, nextCol);
+            tableSelection = null;
+            if (tableWindowRef && !tableWindowRef.closed) {
+                applySelectionHighlight(tableWindowRef.document, '#table-window');
+            }
+            applySelectionHighlight(document, '#table-modal');
+        };
+
+        window.handleTablePaste = (startRow, startCol, text) => {
+            if (!text) return;
+            const rawLines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            const lines = rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines;
+            if (lines.length === 0) return;
+
+            const pastedRows = lines.map(line => line.split('\t'));
+            const pasteRowCount = pastedRows.length;
+            const pasteColCount = Math.max(...pastedRows.map(row => row.length));
+
+            const tableData = normalizeTableData(state.tableEditData);
+            const targetRowCount = Math.max(tableData.length, startRow + pasteRowCount);
+            const targetColCount = Math.max(tableData[0].length, startCol + pasteColCount);
+
+            const nextData = normalizeTableData(tableData);
+            while (nextData.length < targetRowCount) {
+                nextData.push(Array.from({ length: nextData[0].length }, () => ''));
+            }
+            nextData.forEach(row => {
+                while (row.length < targetColCount) {
+                    row.push('');
+                }
+            });
+
+            for (let r = 0; r < pasteRowCount; r += 1) {
+                for (let c = 0; c < pastedRows[r].length; c += 1) {
+                    nextData[startRow + r][startCol + c] = pastedRows[r][c];
+                }
+            }
+
+            const nextColumnWidths = normalizeColumnWidths(targetColCount, state.tableEditColumnWidths);
+            const nextRowHeights = normalizeRowHeights(targetRowCount, state.tableEditRowHeights);
+
+            tablePendingFocus = {
+                row: startRow + pasteRowCount - 1,
+                col: startCol + pasteColCount - 1
+            };
+
+            setState({
+                tableEditData: nextData,
+                tableEditColumnWidths: nextColumnWidths,
+                tableEditRowHeights: nextRowHeights,
+                tableEditIsDirty: true
+            });
+            scheduleTableAutosave();
+        };
+
+        const applyColumnWidth = (targetDoc, containerSelector, colIndex, width) => {
+            targetDoc.querySelectorAll(`${containerSelector} input[data-col="${colIndex}"]`).forEach(input => {
+                input.style.width = `${width}px`;
+                input.style.minWidth = `${width}px`;
+            });
+        };
+
+        const applyRowHeight = (targetDoc, containerSelector, rowIndex, height) => {
+            targetDoc.querySelectorAll(`${containerSelector} input[data-row="${rowIndex}"]`).forEach(input => {
+                input.style.height = `${height}px`;
+            });
+        };
+
+        window.setTableColumnWidth = (colIndex, width) => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const colCount = tableData[0].length;
+            const widths = normalizeColumnWidths(colCount, state.tableEditColumnWidths);
+            const targetCol = Math.min(colCount - 1, Math.max(0, colIndex));
+            const nextWidth = Math.min(TABLE_MAX_COL_WIDTH, Math.max(TABLE_MIN_COL_WIDTH, width));
+            widths[targetCol] = nextWidth;
+            setState({ tableEditColumnWidths: widths, tableEditIsDirty: true });
+            scheduleTableAutosave();
+        };
+
+        window.handleTableDeleteSelection = () => {
+            const selection = normalizeSelection(tableSelection);
+            if (!selection) return false;
+            const tableData = normalizeTableData(state.tableEditData);
+            for (let r = selection.startRow; r <= selection.endRow; r += 1) {
+                for (let c = selection.startCol; c <= selection.endCol; c += 1) {
+                    if (tableData[r] && typeof tableData[r][c] !== 'undefined') {
+                        tableData[r][c] = '';
+                    }
+                }
+            }
+            setState({ tableEditData: tableData, tableEditIsDirty: true });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.removeSelectedColumns = () => {
+            const tableData = normalizeTableData(state.tableEditData);
+            if (!tableData.length) return false;
+            const colCount = tableData[0].length;
+            const selection = normalizeSelection(tableSelection) || {
+                startRow: tableActiveCell.row,
+                endRow: tableActiveCell.row,
+                startCol: tableActiveCell.col,
+                endCol: tableActiveCell.col
+            };
+            const startCol = Math.max(0, selection.startCol);
+            const endCol = Math.min(colCount - 1, selection.endCol);
+            const colsToRemove = new Set();
+            for (let c = startCol; c <= endCol; c += 1) colsToRemove.add(c);
+            if (colCount - colsToRemove.size < 1) return false;
+
+            const nextData = tableData.map(row => row.filter((_, idx) => !colsToRemove.has(idx)));
+            const nextWidths = normalizeColumnWidths(colCount, state.tableEditColumnWidths)
+                .filter((_, idx) => !colsToRemove.has(idx));
+
+            tableSelection = null;
+            setState({
+                tableEditData: nextData,
+                tableEditColumnWidths: nextWidths,
+                tableEditIsDirty: true
+            });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.removeSelectedRows = () => {
+            const tableData = normalizeTableData(state.tableEditData);
+            if (!tableData.length) return false;
+            const rowCount = tableData.length;
+            const selection = normalizeSelection(tableSelection) || {
+                startRow: tableActiveCell.row,
+                endRow: tableActiveCell.row,
+                startCol: tableActiveCell.col,
+                endCol: tableActiveCell.col
+            };
+            const startRow = Math.max(0, selection.startRow);
+            const endRow = Math.min(rowCount - 1, selection.endRow);
+            const rowsToRemove = new Set();
+            for (let r = startRow; r <= endRow; r += 1) rowsToRemove.add(r);
+            if (rowCount - rowsToRemove.size < 1) return false;
+
+            const nextData = tableData.filter((_, idx) => !rowsToRemove.has(idx));
+            const nextHeights = normalizeRowHeights(rowCount, state.tableEditRowHeights)
+                .filter((_, idx) => !rowsToRemove.has(idx));
+
+            tableSelection = null;
+            setState({
+                tableEditData: nextData,
+                tableEditRowHeights: nextHeights,
+                tableEditIsDirty: true
+            });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.setTableRowHeight = (rowIndex, height) => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const rowCount = tableData.length;
+            const heights = normalizeRowHeights(rowCount, state.tableEditRowHeights);
+            const targetRow = Math.min(rowCount - 1, Math.max(0, rowIndex));
+            const nextHeight = Math.min(TABLE_MAX_ROW_HEIGHT, Math.max(TABLE_MIN_ROW_HEIGHT, height));
+            heights[targetRow] = nextHeight;
+            setState({ tableEditRowHeights: heights, tableEditIsDirty: true });
+            scheduleTableAutosave();
+        };
+
+        const attachTableResizeHandlers = (targetDoc, containerSelector) => {
+            targetDoc.querySelectorAll(`${containerSelector} .col-resizer`).forEach(handle => {
+                handle.onmousedown = (event) => {
+                    event.preventDefault();
+                    const colIndex = Number(handle.dataset.col);
+                    const startX = event.clientX;
+                    const tableData = normalizeTableData(state.tableEditData);
+                    const widths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
+                    const startWidth = widths[colIndex];
+                    let latestWidth = startWidth;
+
+                    const onMouseMove = (moveEvent) => {
+                        const delta = moveEvent.clientX - startX;
+                        latestWidth = Math.min(TABLE_MAX_COL_WIDTH, Math.max(TABLE_MIN_COL_WIDTH, startWidth + delta));
+                        applyColumnWidth(targetDoc, containerSelector, colIndex, latestWidth);
+                    };
+                    const onMouseUp = () => {
+                        targetDoc.removeEventListener('mousemove', onMouseMove);
+                        targetDoc.removeEventListener('mouseup', onMouseUp);
+                        window.setTableColumnWidth(colIndex, latestWidth);
+                    };
+
+                    targetDoc.addEventListener('mousemove', onMouseMove);
+                    targetDoc.addEventListener('mouseup', onMouseUp);
+                };
+            });
+
+            targetDoc.querySelectorAll(`${containerSelector} .row-resizer`).forEach(handle => {
+                handle.onmousedown = (event) => {
+                    event.preventDefault();
+                    const rowIndex = Number(handle.dataset.row);
+                    const startY = event.clientY;
+                    const tableData = normalizeTableData(state.tableEditData);
+                    const heights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
+                    const startHeight = heights[rowIndex];
+                    let latestHeight = startHeight;
+
+                    const onMouseMove = (moveEvent) => {
+                        const delta = moveEvent.clientY - startY;
+                        latestHeight = Math.min(TABLE_MAX_ROW_HEIGHT, Math.max(TABLE_MIN_ROW_HEIGHT, startHeight + delta));
+                        applyRowHeight(targetDoc, containerSelector, rowIndex, latestHeight);
+                    };
+                    const onMouseUp = () => {
+                        targetDoc.removeEventListener('mousemove', onMouseMove);
+                        targetDoc.removeEventListener('mouseup', onMouseUp);
+                        window.setTableRowHeight(rowIndex, latestHeight);
+                    };
+
+                    targetDoc.addEventListener('mousemove', onMouseMove);
+                    targetDoc.addEventListener('mouseup', onMouseUp);
+                };
+            });
+        };
+
+        window.saveTableChanges = async (isAuto = false) => {
+            if (state.isFirebaseError || !state.db || !appId) {
+                if (!isAuto) setState({ statusMessage: "Firebase 오류로 인해 표를 저장할 수 없습니다." });
+                return false;
+            }
+            const { sharedRef, privateRef } = getCollectionRefs();
+            const targetRef = state.tableEditIsShared ? sharedRef : privateRef;
+            if (!targetRef || !state.tableEditTaskId) {
+                if (!isAuto) setState({ statusMessage: "표 저장 경로를 찾을 수 없습니다." });
+                return false;
+            }
+
+            const tableData = normalizeTableData(state.tableEditData);
+            const columnWidths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
+            const rowHeights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
+            const docRef = doc(targetRef, state.tableEditTaskId);
+            try {
+                await updateDoc(docRef, {
+                    table: { rows: serializeTableRows(tableData), columnWidths, rowHeights },
+                    tableUpdatedAt: serverTimestamp()
+                });
+                state.tableEditIsDirty = false;
+                if (!isAuto) {
+                    setState({ statusMessage: "표가 저장되었습니다." });
+                }
+                return true;
+            } catch (error) {
+                console.error("표 저장 오류:", error);
+                if (!isAuto) setState({ statusMessage: `표 저장 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        window.exportTableToExcel = () => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const csv = tableData.map(row => row.map(escapeCsvValue).join(',')).join('\r\n');
+            const csvWithBom = '\ufeff' + csv;
+            const blob = new Blob([csvWithBom], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `table-${state.tableEditTaskId || 'export'}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        };
+        
+        /**
+         * [추가] 관리자 모드 토글 함수
+         *  - 비밀번호(9594) 입력 시 관리자 모드 활성화
+         *  - 활성화 상태에서 다시 호출하면 해제
+         */
+        window.toggleAdminMode = (password = null) => {
+            if (state.isAdmin) {
+                setState({ 
+                    isAdmin: false,
+                    isAdminModalOpen: false,
+                    statusMessage: "관리자 모드가 비활성화되었습니다."
+                });
+                return;
+            }
+            
+            if (password === '9594') {
+                setState({ 
+                    isAdmin: true,
+                    isAdminModalOpen: false,
+                    statusMessage: "관리자 모드가 활성화되었습니다. 공유 업무를 영구 삭제할 수 있습니다."
+                });
+            } else {
+                setState({ 
+                    statusMessage: "잘못된 관리자 비밀번호입니다. 다시 입력해주세요.",
+                    isAdminModalOpen: true
+                });
+            }
+        };
+
+        // ====================================================================
+        // 3. Firebase 및 데이터 로직
+        // ====================================================================
+        
+        /**
+         * Firestore 실시간 리스너 정리
+         */
+        const cleanupListeners = () => {
+            if (state.unsubscribeProfile) state.unsubscribeProfile();
+            if (state.unsubscribeShared) state.unsubscribeShared();
+            if (state.unsubscribeResolution) state.unsubscribeResolution(); 
+            if (state.unsubscribePrivate) state.unsubscribePrivate();
+            if (state.unsubscribeNotices) state.unsubscribeNotices();
+            if (state.unsubscribeNoticeReads) state.unsubscribeNoticeReads();
+
+            state.unsubscribeProfile = null;
+            state.unsubscribeShared = null;
+            state.unsubscribeResolution = null; 
+            state.unsubscribePrivate = null;
+            state.unsubscribeNotices = null;
+            state.unsubscribeNoticeReads = null;
+        };
+        
+        // Firestore 컬렉션 참조를 계산
+        const getCollectionRefs = () => {
+            const { db, userId } = state;
+            if (!db || !userId || !appId) return {}; 
+            
+            // 팀 공유 업무 (Public Data)
+            const sharedRef = collection(db, `artifacts/${appId}/public/data/shared_tasks`);
+            const noticesRef = collection(db, `artifacts/${appId}/public/data/notices`);
+            
+            // [추가] 개인별 완료 상태 (Private Data)
+            const resolutionRef = collection(db, `artifacts/${appId}/users/${userId}/resolution_status`); 
+            const privateRef = collection(db, `artifacts/${appId}/users/${userId}/private_tasks`);
+            const noticeReadsRef = collection(db, `artifacts/${appId}/users/${userId}/notice_reads`);
+
+            return { sharedRef, noticesRef, resolutionRef, privateRef, noticeReadsRef };
+        };
+
+        // Firestore 프로필 리스너 설정 (변경 없음)
+        const setupProfileListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            const profileDocRef = doc(state.db, `artifacts/${appId}/users/${state.userId}/profile/data`);
+
+            if (state.unsubscribeProfile) state.unsubscribeProfile();
+
+            const unsubscribeProfile = onSnapshot(profileDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    setState({ nickname: data.nickname || null, statusMessage: '' }); 
+                } else {
+                    setState({ nickname: null, statusMessage: '공유 업무 작성을 위해 닉네임을 설정해주세요.' });
+                }
+            }, (error) => {
+                console.error("프로필 실시간 리스너 오류:", error);
+                setState({ statusMessage: `프로필 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeProfile = unsubscribeProfile;
+        };
+        
+        // 이전에 로드된 작업 ID를 저장하여 중복 알림을 방지하고 새 항목만 처리
+        let loadedSharedTaskIds = new Set();
+
+        // [추가] 개인 완료 상태 리스너 설정
+        const setupResolutionListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+            
+            if (state.unsubscribeResolution) state.unsubscribeResolution();
+
+            const { resolutionRef } = getCollectionRefs();
+            if (!resolutionRef) return;
+
+            const unsubscribeResolution = onSnapshot(query(resolutionRef), (snapshot) => {
+                const resolutionMap = new Map();
+                snapshot.docs.forEach(doc => {
+                    const data = doc.data();
+                    // doc.id는 taskId와 동일하며, resolved 필드의 true/false 값을 저장
+                    resolutionMap.set(doc.id, data.resolved); 
+                });
+                setState({ resolutionMap });
+            }, (error) => {
+                console.error("개인 완료 상태 리스너 오류:", error);
+                setState({ statusMessage: `개인 완료 상태 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeResolution = unsubscribeResolution;
+        };
+
+        // [복원] 개인 업무 실시간 리스너
+        const setupPrivateListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            if (state.unsubscribePrivate) state.unsubscribePrivate();
+
+            const { privateRef } = getCollectionRefs();
+            if (!privateRef) return;
+
+            const unsubscribePrivate = onSnapshot(query(privateRef), (snapshot) => {
+                const privateTasks = snapshot.docs.map(docSnap => {
+                    const data = docSnap.data();
+                    return {
+                        id: docSnap.id,
+                        ...data,
+                        isShared: false,
+                        completed: data.completed ?? false,
+                    };
+                });
+
+                setState({ privateTasks, loading: false });
+            }, (error) => {
+                console.error("개인 업무 실시간 리스너 오류:", error);
+                setState({ statusMessage: `개인 업무 데이터 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribePrivate = unsubscribePrivate;
+        };
+
+        const setupNoticeListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            if (state.unsubscribeNotices) state.unsubscribeNotices();
+
+            const { noticesRef } = getCollectionRefs();
+            if (!noticesRef) return;
+
+            const unsubscribeNotices = onSnapshot(query(noticesRef), (snapshot) => {
+                const notices = snapshot.docs.map(docSnap => {
+                    const data = docSnap.data();
+                    return {
+                        id: docSnap.id,
+                        ...data
+                    };
+                }).sort((a, b) => getNoticeMillis(b) - getNoticeMillis(a));
+
+                setState({ notices });
+            }, (error) => {
+                console.error("공지사항 실시간 리스너 오류:", error);
+                setState({ statusMessage: `공지사항 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeNotices = unsubscribeNotices;
+        };
+
+        const setupNoticeReadListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            if (state.unsubscribeNoticeReads) state.unsubscribeNoticeReads();
+
+            const { noticeReadsRef } = getCollectionRefs();
+            if (!noticeReadsRef) return;
+
+            const unsubscribeNoticeReads = onSnapshot(query(noticeReadsRef), (snapshot) => {
+                const noticeReadMap = new Map();
+                snapshot.docs.forEach(docSnap => {
+                    noticeReadMap.set(docSnap.id, true);
+                });
+                setState({ noticeReadMap });
+            }, (error) => {
+                console.error("공지사항 읽음 상태 리스너 오류:", error);
+                setState({ statusMessage: `공지사항 읽음 상태 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeNoticeReads = unsubscribeNoticeReads;
+        };
+
+
+        // Firebase 실시간 리스너 설정 (문제 2 해결: 알림 로직 변경)
+        const setupFirestoreListeners = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+            
+            // 리스너 재설정 전에 기존 리스너를 정리합니다.
+            cleanupListeners(); 
+            loadedSharedTaskIds.clear();
+            let localIsInitialLoad = true; // 리스너가 호출될 때마다 초기화 (첫 스냅샷 여부)
+
+            const { sharedRef } = getCollectionRefs();
+            if (!sharedRef) return;
+            
+            // [추가] 개인 완료 상태 리스너도 설정
+            setupResolutionListener(); 
+            setupPrivateListener();
+            setupNoticeListener();
+            setupNoticeReadListener();
+
+            // 1. 공유 업무 리스너 (알림 로직 포함)
+            const unsubscribeShared = onSnapshot(query(sharedRef), (snapshot) => {
+                const fetchedTasks = [];
+                const currentUserId = state.userId; // 현재 사용자 ID
+
+                // ?? 초기 로딩 시 모든 ID를 Set에 추가합니다. (새로고침 시 알림 방지)
+                if (localIsInitialLoad) {
+                    snapshot.docs.forEach(doc => loadedSharedTaskIds.add(doc.id));
+                    localIsInitialLoad = false;
+                    console.log(`[Notification Debug] Initial load completed with ${loadedSharedTaskIds.size} tasks. Notification system active.`);
+                }
+                
+                snapshot.docChanges().forEach(change => {
+                    const taskData = {
+                        id: change.doc.id,
+                        ...change.doc.data(),
+                        isShared: true,
+                    };
+                    
+                    if (change.type === "added") {
+                        
+                        // ?? 알림 요청 조건: 1. Set에 없는 ID (진짜 새로 추가된 문서), 2. 등록자가 내가 아닐 때
+                        if (!loadedSharedTaskIds.has(taskData.id) && taskData.creatorId !== currentUserId && ipcRenderer) {
+                            
+                            const notificationTitle = `?? 새 공유 업무 도착 (${appId})`;
+                            const notificationBody = `${taskData.creatorName} 님이 등록했습니다: ${taskData.text.substring(0, 30)}...`;
+                            
+                            console.log(`[Notification Request SENT] Title: ${notificationTitle} | Body: ${notificationBody}`); // 디버깅 로그 추가
+                            
+                            ipcRenderer.send('show-notification', { 
+                                title: notificationTitle,
+                                body: notificationBody
+                            });
+                        }
+                        
+                        // 항상 Set에 추가하여, 다음 루프에서 중복 알림을 방지합니다.
+                        loadedSharedTaskIds.add(taskData.id);
+                    }
+                    // 'modified' 또는 'removed' 항목에 대해서는 알림을 보내지 않습니다.
+                });
+
+                // 전체 문서 목록을 다시 구성
+                snapshot.docs.forEach(doc => {
+                    fetchedTasks.push({
+                        id: doc.id,
+                        ...doc.data(),
+                        isShared: true
+                    });
+                });
+
+                // [수정] tasks만 업데이트하고, loading 상태를 업데이트
+                setState({ tasks: fetchedTasks, loading: false });
+            }, (error) => {
+                console.error("공유 업무 실시간 리스너 오류:", error);
+                setState({ statusMessage: `공유 업무 데이터 로드 오류: ${error.message}` });
+            });
+        };
+        
+        // 닉네임 설정 함수 (변경 없음)
+        window.handleSetNickname = async (newNickname) => {
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+
+            const trimmedNickname = newNickname.trim();
+            if (trimmedNickname.length < 2 || trimmedNickname.length > 15) {
+                setState({ statusMessage: "닉네임은 2자 이상 15자 이하로 설정해주세요." });
+                return false;
+            }
+
+            const profileDocRef = doc(state.db, `artifacts/${appId}/users/${state.userId}/profile/data`);
+
+            try {
+                // 닉네임 업데이트
+                await setDoc(profileDocRef, { nickname: trimmedNickname }, { merge: true });
+                // 닉네임은 setupProfileListener에서 업데이트하므로 여기서는 모달만 닫음
+                setState({ statusMessage: `닉네임이 '${trimmedNickname}'(으)로 설정되었습니다.`, isNicknameModalOpen: false }); 
+                return true;
+            } catch (error) {
+                console.error("닉네임 설정 오류:", error);
+                setState({ statusMessage: `닉네임 설정 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        window.handleReadNotice = async (noticeId) => {
+            if (!noticeId || state.isFirebaseError || !state.db || !state.userId || !appId) return;
+            const { noticeReadsRef } = getCollectionRefs();
+            if (!noticeReadsRef) return;
+
+            const nextReadMap = new Map(state.noticeReadMap);
+            if (!nextReadMap.get(noticeId)) {
+                nextReadMap.set(noticeId, true);
+                setState({ noticeReadMap: nextReadMap });
+            }
+
+            try {
+                await setDoc(doc(noticeReadsRef, noticeId), { readAt: serverTimestamp() }, { merge: true });
+            } catch (error) {
+                console.error("공지사항 읽음 처리 오류:", error);
+                setState({ statusMessage: `공지사항 읽음 처리 오류: ${error.message}` });
+            }
+        };
+
+        window.handleSaveNoticeFromEditor = async (mode, noticeId, title, content) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 공지사항을 등록/수정할 수 있습니다." });
+                return false;
+            }
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+
+            const trimmedTitle = title.trim();
+            const trimmedContent = content.trim();
+            if (!trimmedTitle || !trimmedContent) {
+                setState({ statusMessage: "공지 제목과 내용을 모두 입력해주세요." });
+                return false;
+            }
+
+            const { noticesRef } = getCollectionRefs();
+            if (!noticesRef) {
+                setState({ statusMessage: "공지사항 저장소를 찾을 수 없습니다." });
+                return false;
+            }
+
+            try {
+                if (mode === 'edit' && noticeId) {
+                    const noticeDocRef = doc(noticesRef, noticeId);
+                    await updateDoc(noticeDocRef, {
+                        title: trimmedTitle,
+                        content: trimmedContent,
+                        updatedAt: serverTimestamp()
+                    });
+                    setState({ statusMessage: "공지사항이 수정되었습니다." });
+                } else {
+                    const noticeDocRef = doc(noticesRef);
+                    await setDoc(noticeDocRef, {
+                        title: trimmedTitle,
+                        content: trimmedContent,
+                        createdAt: serverTimestamp(),
+                        creatorId: state.userId,
+                        creatorName: state.nickname || '관리자'
+                    });
+                    setState({ statusMessage: "공지사항이 등록되었습니다." });
+                }
+                return true;
+            } catch (error) {
+                console.error("공지사항 저장 오류:", error);
+                setState({ statusMessage: `공지사항 저장 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        window.handleDeleteNotice = async (noticeId) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 공지사항을 삭제할 수 있습니다." });
+                return false;
+            }
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+            const { noticesRef } = getCollectionRefs();
+            if (!noticesRef) {
+                setState({ statusMessage: "공지사항 저장소를 찾을 수 없습니다." });
+                return false;
+            }
+            try {
+                await deleteDoc(doc(noticesRef, noticeId));
+                setState({ statusMessage: "공지사항이 삭제되었습니다." });
+                return true;
+            } catch (error) {
+                console.error("공지사항 삭제 오류:", error);
+                setState({ statusMessage: `공지사항 삭제 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        // Task 추가 함수 (등록 후 알림 요청 제거, 리스너가 처리)
+        const handleAddTask = async (text, dueDate, isSharedType, memoText, assigneeText) => {
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+            
+            const { sharedRef, privateRef } = getCollectionRefs();
+
+            // 개인 업무 저장 처리
+            if (!isSharedType) {
+                if (!privateRef) {
+                    setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                    return false;
+                }
+
+                const privateTaskData = {
+                    text: text.trim(),
+                    dueDate: dueDate || null,
+                    memo: memoText?.trim() ? memoText.trim() : null,
+                    completed: false,
+                    createdAt: serverTimestamp(),
+                    creatorId: state.userId,
+                };
+
+                try {
+                    await setDoc(doc(privateRef), privateTaskData);
+                    setState({ 
+                        statusMessage: "개인 업무에 등록되었습니다.", 
+                        isTaskModalOpen: false 
+                    });
+                    return true;
+                } catch (error) {
+                    console.error("개인 업무 추가 오류:", error);
+                    setState({ statusMessage: `개인 업무 추가 중 오류가 발생했습니다: ${error.message}` });
+                    return false;
+                }
+            }
+
+            // 공유 업무이면서 닉네임이 설정되지 않았다면 경고
+            if (!state.nickname) {
+                 setState({ statusMessage: "공유 업무를 등록하려면 먼저 닉네임을 설정해주세요.", isTaskModalOpen: false, isNicknameModalOpen: true });
+                 return false;
+            }
+
+            const taskData = {
+                text: text.trim(),
+                dueDate: dueDate || null,
+                memo: memoText?.trim() ? memoText.trim() : null,
+                assignee: assigneeText?.trim() ? assigneeText.trim() : null,
+                // completed 필드 제거 (개인 완료 상태는 resolutionMap에서 관리)
+                createdAt: serverTimestamp(),
+                creatorId: state.userId,
+                // 닉네임 또는 잘린 ID를 작성자 이름으로 저장
+                creatorName: state.nickname || `ID ${state.userId.substring(0, 8)}...`, 
+            };
+
+            try {
+                if (!sharedRef) {
+                    setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                    return false;
+                }
+                // addDoc 대신 doc(ref)으로 참조를 가져와 setDoc을 사용합니다.
+                await setDoc(doc(sharedRef), taskData); 
+                
+                const message = "팀 공유 업무에 등록되었습니다.";
+                setState({ 
+                    statusMessage: message, 
+                    isTaskModalOpen: false // 업무 모달 닫기
+                });
+                
+                return true;
+            } catch (error) {
+                console.error("업무 추가 오류:", error);
+                setState({ statusMessage: `업무 추가 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        /**
+         * 관리자 메모 수정/추가 함수
+         */
+        window.handleUpdateMemo = async (newMemoText) => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 메모를 수정할 수 있습니다." });
+                return false;
+            }
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+
+            const { sharedRef, privateRef } = getCollectionRefs();
+            const { memoEditTaskId, memoEditIsShared } = state;
+            const trimmedMemo = newMemoText.trim();
+            const memoValue = trimmedMemo.length ? trimmedMemo : null; // 빈 입력은 메모 제거
+
+            try {
+                const targetRef = memoEditIsShared ? sharedRef : privateRef;
+                if (!targetRef) {
+                    setState({ statusMessage: "메모를 저장할 작업 경로를 찾을 수 없습니다." });
+                    return false;
+                }
+                const docRef = doc(targetRef, memoEditTaskId);
+                await updateDoc(docRef, { memo: memoValue, updatedAt: serverTimestamp() });
+
+                setState({
+                    statusMessage: "메모가 업데이트되었습니다.",
+                    isMemoEditModalOpen: false,
+                    memoEditTaskId: null,
+                    memoEditIsShared: false,
+                    memoEditText: '',
+                    memoEditTitle: ''
+                });
+                return true;
+            } catch (error) {
+                console.error("메모 수정 오류:", error);
+                setState({ statusMessage: `메모 수정 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        /**
+         * 관리자 업무 수정 함수
+         */
+        window.handleUpdateTask = async () => {
+            if (!state.isAdmin) {
+                setState({ statusMessage: "관리자 모드에서만 업무를 수정할 수 있습니다." });
+                return false;
+            }
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+
+            const { sharedRef, privateRef } = getCollectionRefs();
+            const { taskEditId, taskEditIsShared } = state;
+            const trimmedText = (state.taskEditText || '').trim();
+            const trimmedMemo = (state.taskEditMemo || '').trim();
+            const trimmedAssignee = (state.taskEditAssignee || '').trim();
+
+            if (!trimmedText) {
+                setState({ statusMessage: "업무 제목을 입력해주세요." });
+                return false;
+            }
+
+            const targetRef = taskEditIsShared ? sharedRef : privateRef;
+            if (!targetRef) {
+                setState({ statusMessage: "업무 저장소를 찾을 수 없습니다." });
+                return false;
+            }
+
+            try {
+                const docRef = doc(targetRef, taskEditId);
+                await updateDoc(docRef, {
+                    text: trimmedText,
+                    dueDate: state.taskEditDueDate || null,
+                    memo: trimmedMemo.length ? trimmedMemo : null,
+                    assignee: taskEditIsShared && trimmedAssignee.length ? trimmedAssignee : null,
+                    updatedAt: serverTimestamp()
+                });
+
+                setState({
+                    statusMessage: "업무가 수정되었습니다.",
+                    isTaskEditModalOpen: false,
+                    taskEditId: null,
+                    taskEditIsShared: false,
+                    taskEditText: '',
+                    taskEditDueDate: '',
+                    taskEditMemo: '',
+                    taskEditAssignee: ''
+                });
+                return true;
+            } catch (error) {
+                console.error("업무 수정 오류:", error);
+                setState({ statusMessage: `업무 수정 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        // Task 상태 토글 함수 (?? 공유 업무는 개인 완료 상태를 업데이트하도록 수정)
+        window.handleToggleTask = async (taskId, isShared) => {
+            if (state.isFirebaseError || !state.db || !appId) {
+                setState({ statusMessage: "Firebase 오류로 인해 상태를 변경할 수 없습니다." });
+                return; 
+            }
+            
+            const { resolutionRef, privateRef } = getCollectionRefs();
+            
+            // 개인 업무 토글
+            if (!isShared) {
+                 if (!privateRef) {
+                     setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                     return;
+                 }
+
+                 const targetTask = state.privateTasks.find(t => t.id === taskId);
+                 const newStatus = targetTask ? !targetTask.completed : true;
+                 const privateDocRef = doc(privateRef, taskId);
+
+                 try {
+                     await setDoc(privateDocRef, { completed: newStatus, updatedAt: serverTimestamp() }, { merge: true });
+                     setState({ statusMessage: `개인 업무가 ${newStatus ? '완료' : '미완료'} 처리되었습니다.` });
+                 } catch (error) {
+                     console.error("개인 업무 토글 오류:", error);
+                     setState({ statusMessage: `개인 업무 상태 변경 중 오류가 발생했습니다: ${error.message}` });
+                 }
+                 return;
+            }
+
+            // 1. 공유 업무: 개인별 완료 상태를 resolution_status에 저장/토글
+            if (!resolutionRef) {
+                setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                return;
+            }
+            const isResolved = state.resolutionMap.get(taskId) || false;
+            const resolutionDocRef = doc(resolutionRef, taskId);
+            
+            try {
+                // resolved 상태가 true이면 문서를 삭제하여 Map에서 제거 (미완료 처리), false이면 true로 설정
+                if (isResolved) {
+                    await deleteDoc(resolutionDocRef);
+                } else {
+                     await setDoc(resolutionDocRef, { resolved: true, taskId: taskId, resolvedAt: serverTimestamp() });
+                }
+
+                setState({ statusMessage: `공유 업무가 개인적으로 ${isResolved ? '미완료' : '완료'} 처리되었습니다.` });
+            } catch (error) {
+                console.error("개인 완료 상태 토글 오류:", error);
+                setState({ statusMessage: `공유 업무 완료 상태 변경 중 오류가 발생했습니다: ${error.message}` });
+            }
+        };
+
+        // Task 삭제 함수 (?? 관리자 모드에 따라 동작 변경)
+        window.handleDeleteTask = async (taskId, isShared) => {
+            if (state.isFirebaseError || !state.db || !appId) {
+                setState({ statusMessage: "Firebase 오류로 인해 삭제할 수 없습니다." });
+                return; 
+            }
+            
+            const { sharedRef, resolutionRef, privateRef } = getCollectionRefs();
+            
+            if (isShared) {
+                
+                if (state.isAdmin) {
+                    if (!sharedRef) {
+                        setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                        return;
+                    }
+                    // ?? [수정] 관리자 모드: Firestore에서 공유 업무 문서 자체를 영구 삭제
+                    if (!window.confirm(`[관리자 모드] 팀 공유 업무를 영구 삭제하시겠습니까? 팀 전체에서 사라집니다!`)) {
+                        return;
+                    }
+
+                    try {
+                        const taskDocRef = doc(sharedRef, taskId);
+                        await deleteDoc(taskDocRef);
+                        
+                        // [추가] 관리자가 삭제 시, 모든 사용자의 resolution_status 문서도 정리 (선택적)
+                        if (resolutionRef) {
+                            const resolutionDocRef = doc(resolutionRef, taskId);
+                            await deleteDoc(resolutionDocRef);
+                        }
+
+                        setState({ statusMessage: `[관리자] 공유 업무가 영구 삭제되었습니다.` });
+                    } catch (error) {
+                        console.error("공유 업무 영구 삭제 오류:", error);
+                        setState({ statusMessage: `[관리자] 공유 업무 삭제 중 오류 발생: ${error.message}` });
+                    }
+                    return;
+                } 
+                
+                // ?? 일반 사용자 모드: 실제 삭제 대신 개인 완료 상태를 토글
+                if (!resolutionRef) {
+                     setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                     return;
+                 }
+                if (!window.confirm(`공유 업무는 팀 전체에서 삭제할 수 없습니다. 개인적으로 [완료] 상태로 처리하시겠습니까?`)) {
+                     return;
+                 }
+                window.handleToggleTask(taskId, true); // 개인 완료 상태로 토글
+                 return; 
+            } 
+
+            // 개인 업무 삭제
+            if (!privateRef) {
+                setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                return;
+            }
+
+            if (!window.confirm('개인 업무를 삭제하시겠습니까?')) {
+                return;
+            }
+
+            try {
+                const taskDocRef = doc(privateRef, taskId);
+                await deleteDoc(taskDocRef);
+                setState({ statusMessage: "개인 업무가 삭제되었습니다." });
+            } catch (error) {
+                console.error("개인 업무 삭제 오류:", error);
+                setState({ statusMessage: `개인 업무 삭제 중 오류가 발생했습니다: ${error.message}` });
+            }
+        };
+        // ====================================================================
+        // Firebase 초기화 및 인증
+        // ====================================================================
+        const initializeFirebase = async () => {
+            try {
+                if (!ipcRenderer && appId === null) {
+                    appId = 'team-a-default';
+                }
+                // Firebase 초기화 시 config 유효성 검사
+                if (!firebaseConfig.apiKey) {
+                    throw new Error("Firebase config is missing or invalid.");
+                }
+
+                const app = initializeApp(firebaseConfig);
+                const db = getFirestore(app);
+                const auth = getAuth(app);
+                
+                setState({ app, db, auth });
+
+                // 실제 Firebase 인증 시도
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // onAuthStateChanged 리스너
+                onAuthStateChanged(auth, (user) => {
+                    const userId = user ? user.uid : null;
+                    const initialLoading = appId === null;
+                    setState({ userId, isAuthReady: true, loading: initialLoading }); 
+
+                    // 인증 완료 후, appId가 이미 설정된 경우 (main.js에서 받은 경우)만 리스너 설정
+                    if (userId && appId !== null) {
+                        setupFirestoreListeners();
+                        setupProfileListener(); 
+                    }
+                });
+                
+            } catch (error) {
+                console.error("Firebase 초기화 또는 인증 오류:", error);
+                setState({ 
+                    isFirebaseError: true, 
+                    loading: false, 
+                    statusMessage: `앱 초기화 중 오류가 발생했습니다. ${error.message}` 
+                });
+            }
+        };
+
+        // ====================================================================
+        // 5. 서버 전환 로직 (IPC 수신 - 변경 없음)
+        // ====================================================================
+
+        /**
+         * IPC를 통해 새 서버 ID를 수신하고 데이터 리스너를 재설정합니다.
+         * @param {string} newAppId 새로 선택된 서버/팀의 ID
+         */
+        const switchServer = (newAppId) => {
+            // [추가] 서버 ID가 변경되지 않으면 아무것도 하지 않음
+            if (newAppId === appId) return;
+
+            // 1. 전역 appId 업데이트
+            appId = newAppId;
+            
+            // 2. 상태 초기화 및 로딩 시작
+            setState({ 
+                statusMessage: `서버가 '${newAppId}'(으)로 전환되었습니다. 데이터 로드 중...`,
+                tasks: [],
+                privateTasks: [],
+                resolutionMap: new Map(),
+                notices: [],
+                noticeReadMap: new Map(),
+                isNoticeModalOpen: false,
+                noticeSearchTerm: '',
+                isMemoModalOpen: false,
+                memoModalContent: '',
+                memoModalTitle: '',
+                isMemoEditModalOpen: false,
+                memoEditTaskId: null,
+                memoEditIsShared: false,
+                memoEditText: '',
+                memoEditTitle: '',
+                isTaskEditModalOpen: false,
+                taskEditId: null,
+                taskEditIsShared: false,
+                taskEditText: '',
+                taskEditDueDate: '',
+                taskEditMemo: '',
+                taskEditAssignee: '',
+                isTableModalOpen: false,
+                tableEditTaskId: null,
+                tableEditIsShared: false,
+                tableEditTitle: '',
+                tableEditData: null,
+                tableEditIsDirty: false,
+                tableEditColumnWidths: null,
+                tableEditRowHeights: null,
+                loading: true,
+            });
+            
+            // 3. 인증이 완료된 상태라면 리스너 재설정
+            if (state.isAuthReady && state.db && state.userId) {
+                setupFirestoreListeners();
+                setupProfileListener(); 
+            } else if (state.isAuthReady) {
+                // 인증은 되었는데 userId가 없다면, 리스너 설정 없이 로딩 해제 (should not happen with anonymous sign in)
+                setState({ loading: false });
+            }
+        };
+
+        // [추가] Electron main 프로세스에서 보낸 'set-server-id' 이벤트 수신
+        if (ipcRenderer) {
+            ipcRenderer.on('set-server-id', (event, newAppId) => {
+                // 앱 시작 시 main.js에서 받은 초기 ID를 여기서 설정하고 데이터 로드를 시작
+                if (appId === null || appId !== newAppId) {
+                    switchServer(newAppId);
+                }
+            });
+        }
+        
+
+        // ====================================================================
+        // 6. UI 렌더링 로직 (HTML Template - UI 분리)
+        // ====================================================================
+        
+        /**
+         * 단일 업무 항목을 렌더링
+         */
+        const renderTaskItem = (task) => {
+            const { formattedDate, statusText, isLate } = getDueDateInfo(task.dueDate);
+            const isShared = task.isShared;
+            
+            const creatorDisplay = task.creatorName || (task.creatorId ? `ID ${state.userId.substring(0, 8)}...` : '익명');
+            const assigneeDisplay = task.assignee ? String(task.assignee) : '';
+
+            // ?? [수정] 완료 상태는 이제 resolutionMap에서 가져옵니다 (공유 업무일 경우).
+            const isResolvedByUser = isShared && state.resolutionMap.get(task.id);
+            const isCompleted = isShared ? isResolvedByUser : task.completed;
+            const tableRows = extractTableRows(task.table);
+            const hasTableContent = Array.isArray(tableRows)
+                && tableRows.some(row => Array.isArray(row) && row.some(cell => String(cell ?? '').trim() !== ''));
+            
+            const liClasses = `relative flex items-start p-2 rounded-xl shadow-md transition duration-150 ease-in-out border-l-4 ${
+                isCompleted
+                    ? 'bg-green-50 border-green-400 opacity-70 line-through'
+                    : isShared 
+                        ? 'bg-white border-indigo-500 hover:shadow-lg'
+                        : 'bg-white border-green-500 hover:shadow-lg'
+            }`;
+
+            const dDayClasses = `text-xs px-2 py-0.5 rounded font-bold flex-shrink-0 transition duration-150 ${
+                isCompleted 
+                    ? 'bg-gray-200 text-gray-500' 
+                    : isLate 
+                        ? 'bg-red-500 text-white shadow-md'
+                        : 'bg-indigo-500 text-white shadow-md'
+            }`;
+
+            const typeBadgeClasses = `text-xs font-semibold px-2 py-0.5 rounded-full ${
+                isShared 
+                ? 'bg-indigo-100 text-indigo-700' 
+                : 'bg-green-100 text-green-700'
+            }`;
+            
+            const toggleIcon = isCompleted ? createIcon('CheckCircle', 'w-5 h-5') : createIcon('Circle', 'w-5 h-5');
+            const toggleColor = isCompleted ? 'text-green-500' : 'text-gray-400 hover:text-indigo-500';
+
+            // [수정] 삭제 버튼의 텍스트와 색상을 관리자 모드에 따라 변경
+            const deleteButtonClasses = state.isAdmin 
+                ? 'text-red-500 hover:text-red-700 bg-red-100 hover:bg-red-200 rounded-full p-1'
+                : 'text-gray-300 hover:text-red-500';
+            const deleteButtonTooltip = state.isAdmin ? '[관리자] 영구 삭제' : '개인 완료 처리';
+
+            return `
+                <li class="${liClasses}">
+                    <!-- 완료 토글 버튼 -->
+                    <button
+                        onclick="window.handleToggleTask('${task.id}', ${isShared})"
+                        class="flex-shrink-0 mt-1 mr-3 ${toggleColor} window-no-drag"
+                        aria-label="${isCompleted ? "미완료로 표시" : "완료로 표시"}"
+                    >
+                        ${toggleIcon}
+                    </button>
+
+                    <!-- 업무 내용 및 정보 -->
+                    <div class="flex-grow min-w-0 pr-12">
+                        <p class="text-base font-medium break-words ${isCompleted ? 'text-gray-500' : 'text-gray-800'} mb-1">
+                            ${task.text}
+                        </p>
+
+                        <!-- 하단 정보 라인 -->
+                        <div class="flex items-center space-x-3 mt-1 text-xs">
+                            <!-- 유형 배지 -->
+                            <span class="${typeBadgeClasses}">
+                                ${isShared ? '공유 업무' : '개인 업무'}
+                            </span>
+
+                            <!-- 작성자 이름 (공유 업무일 경우만 표시) -->
+                            ${isShared && (task.creatorName || task.creatorId) ? `
+                                <span class="text-gray-500">
+                                    작성자: <span class="font-medium text-gray-700">${creatorDisplay}</span>
+                                </span>
+                            ` : ''}
+
+                            ${isShared && assigneeDisplay ? `
+                                <span class="text-gray-500">
+                                    담당자: <span class="font-medium text-gray-700">${assigneeDisplay}</span>
+                                </span>
+                            ` : ''}
+
+                            <!-- 마감일 정보 -->
+                            ${task.dueDate ? `
+                                <span class="text-gray-500">
+                                    마감: ${formattedDate}
+                                </span>
+                            ` : ''}
+                        </div>
+                    </div>
+
+                    <!-- D-Day & Action Buttons -->
+                    <div class="absolute top-2 right-2 flex flex-col items-end space-y-1.5">
+                        ${task.dueDate ? `<span class="${dDayClasses}">${statusText}</span>` : ''}
+
+                        <div class="flex items-center space-x-1.5">
+            ${state.isAdmin ? `
+                            <button
+                                onclick="window.openTaskEditModal('${task.id}', ${isShared})"
+                                class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-full p-1 window-no-drag"
+                                aria-label="업무 수정"
+                                title="업무 수정 (관리자)"
+                            >
+                                ${createIcon('Edit2', 'w-4 h-4')}
+                            </button>
+                            ` : ''}
+                            <button
+                                onclick="window.openTableWindow('${task.id}', ${isShared})"
+                                class="${hasTableContent ? 'text-amber-600 hover:text-amber-800 bg-amber-50 hover:bg-amber-100' : 'text-gray-300 hover:text-gray-500 bg-gray-100 hover:bg-gray-200'} rounded-full p-1 window-no-drag"
+                                aria-label="표 편집"
+                                title="표 편집"
+                            >
+                                ${createIcon('Table', 'w-4 h-4')}
+                            </button>
+                            ${task.memo ? `
+                            <button
+                                onclick="window.openMemoModal('${task.id}')"
+                                class="text-indigo-500 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-full p-1 window-no-drag"
+                                aria-label="메모 보기"
+                                title="메모 보기"
+                            >
+                                ${createIcon('Info', 'w-4 h-4')}
+                            </button>
+                            ` : ''}
+
+                            <!-- 삭제/완료 버튼 (관리자 모드에 따라 동작 변경) -->
+                            <button
+                                onclick="window.handleDeleteTask('${task.id}', ${isShared})"
+                                class="${deleteButtonClasses} transition duration-150 p-1 window-no-drag"
+                                aria-label="${deleteButtonTooltip}"
+                                title="${deleteButtonTooltip}"
+                            >
+                                ${createIcon('Trash2', 'w-4 h-4')}
+                            </button>
+                        </div>
+                    </div>
+                </li>
+            `;
+        };
+        
+        /**
+         * 업무 등록 모달 렌더링 (변경 없음)
+         */
+        const renderTaskRegistrationModal = () => {
+            if (!state.isTaskModalOpen) return;
+
+            const modalHtml = `
+                <div id="task-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">새 업무 등록</h2>
+                            <button id="task-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        
+                        <form id="task-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="taskText" class="block text-sm font-medium text-gray-700 mb-1">
+                                    업무 내용 <span class="text-red-500">*</span>
+                                </label>
+                                <input
+                                    id="taskText"
+                                    type="text"
+                                    placeholder="처리해야 할 업무 내용을 입력하세요"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                    required
+                                />
+                            </div>
+
+                            <div id="assignee-field" class="mb-4">
+                                <label for="assigneeText" class="block text-sm font-medium text-gray-700 mb-1">
+                                    담당자 (공유 업무)
+                                </label>
+                                <input
+                                    id="assigneeText"
+                                    type="text"
+                                    placeholder="담당자 이름을 입력하세요 (선택)"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                />
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="dueDate" class="block text-sm font-medium text-gray-700 mb-1">
+                                    마감일
+                                </label>
+                                <input
+                                    id="dueDate"
+                                    type="date"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                />
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="memoText" class="block text-sm font-medium text-gray-700 mb-1">
+                                    메모 (선택)
+                                </label>
+                                <textarea
+                                    id="memoText"
+                                    rows="3"
+                                    placeholder="업무에 대한 메모를 적어주세요. (선택)"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                ></textarea>
+                            </div>
+                            
+                            <div id="task-type-container" class="mb-6 p-3 rounded-lg border bg-indigo-50 border-indigo-300">
+                                <p class="text-xs font-semibold mb-2 text-gray-700">업무 유형 선택</p>
+                                
+                                <div class="flex items-center space-x-6 text-sm">
+                                    <!-- 공유 업무 선택 -->
+                                    <label class="flex items-center cursor-pointer">
+                                        <input type="radio" name="taskType" value="shared" checked 
+                                            class="form-radio text-indigo-600 focus:ring-indigo-500" />
+                                        ${createIcon('Share2', 'w-4 h-4 ml-1 mr-1 text-indigo-600')}
+                                        <span class="text-gray-800 font-bold">공유 업무</span>
+                                    </label>
+                                    
+                                    <!-- 개인 업무 선택 -->
+                                    <label class="flex items-center cursor-pointer">
+                                        <input type="radio" name="taskType" value="private" 
+                                            class="form-radio text-green-600 focus:ring-green-500" />
+                                        ${createIcon('User', 'w-4 h-4 ml-1 mr-1 text-green-600')}
+                                        <span class="text-gray-800 font-bold">개인 업무</span>
+                                    </label>
+                                </div>
+                                
+                                <div id="type-info-message" class="mt-3 flex items-center p-2 bg-indigo-100 rounded text-xs text-indigo-800 font-medium">
+                                    ${createIcon('Info', 'w-4 h-4 mr-2 flex-shrink-0')}
+                                    <span>업무 유형을 선택하세요.</span>
+                                </div>
+                            </div>
+
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="task-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="task-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    ${createIcon('PlusCircle', 'w-4 h-4 mr-2 inline-block')}
+                                    <span id="submit-text">공유 업무 등록</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+            
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            document.getElementById('task-modal-close-btn').onclick = () => setState({ isTaskModalOpen: false, statusMessage: '' }); 
+            document.getElementById('task-modal-cancel-btn').onclick = () => setState({ isTaskModalOpen: false, statusMessage: '' }); 
+
+            const form = document.getElementById('task-form');
+            const typeContainer = document.getElementById('task-type-container');
+            const submitButton = document.getElementById('task-modal-submit-btn');
+            const submitText = document.getElementById('submit-text');
+            const infoMessage = document.getElementById('type-info-message');
+            const assigneeField = document.getElementById('assignee-field');
+            const taskTypeRadios = form.querySelectorAll('input[name="taskType"]');
+            
+            const updateModalStyle = (isShared) => {
+                const typeClasses = isShared 
+                    ? 'bg-indigo-50 border-indigo-300' 
+                    : 'bg-green-50 border-green-300';
+                const submitClasses = isShared 
+                    ? 'bg-indigo-500 hover:bg-indigo-700' 
+                    : 'bg-green-500 hover:bg-green-700';
+                const infoClasses = isShared 
+                    ? 'bg-indigo-100 text-indigo-800' 
+                    : 'bg-green-100 text-green-800';
+                const infoText = isShared 
+                    ? `경고: 이 업무는 팀의 모든 사용자에게 실시간으로 공유되며, 작성자는 '${state.nickname || '미설정'}'입니다.` 
+                    : '알림: 이 업무는 본인만 확인할 수 있는 개인 스케줄입니다.';
+                const buttonText = isShared 
+                    ? '공유 업무 등록' 
+                    : '개인 업무 등록';
+
+                typeContainer.className = `mb-6 p-3 rounded-lg border transition duration-300 ease-in-out ${typeClasses}`;
+                submitButton.className = `px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 ${submitClasses}`;
+                submitText.textContent = buttonText;
+                infoMessage.className = `mt-3 flex items-center p-2 rounded text-xs font-medium ${infoClasses}`;
+                infoMessage.innerHTML = `${createIcon('Info', 'w-4 h-4 mr-2 flex-shrink-0')}<span>${infoText}</span>`;
+                if (assigneeField) {
+                    assigneeField.style.display = isShared ? 'block' : 'none';
+                }
+            };
+
+            taskTypeRadios.forEach(radio => {
+                radio.onchange = (e) => {
+                    const isShared = e.target.value === 'shared';
+                    updateModalStyle(isShared);
+                };
+            });
+            updateModalStyle(true); // 초기 설정
+
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                const taskText = document.getElementById('taskText').value; // ?? 수정된 부분
+                const assigneeText = document.getElementById('assigneeText').value;
+                const dueDate = document.getElementById('dueDate').value;
+                const memoText = document.getElementById('memoText').value;
+                const isShared = form.querySelector('input[name="taskType"]:checked').value === 'shared';
+                
+                submitButton.disabled = true;
+                submitText.textContent = '등록 중...';
+
+                const success = await handleAddTask(taskText, dueDate, isShared, memoText, assigneeText); // 메모 포함 등록
+
+                if (!success) {
+                    submitButton.disabled = false;
+                    updateModalStyle(isShared); // 텍스트 복구
+                }
+            };
+        };
+        
+        /**
+         * 닉네임 설정 모달 렌더링
+         */
+        const renderNicknameModal = () => {
+            if (!state.isNicknameModalOpen) return;
+
+            const modalHtml = `
+                <div id="nickname-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">내 닉네임 설정</h2>
+                            <button id="nickname-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="nickname-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="nickname-input" class="block text-sm font-medium text-gray-700 mb-1">
+                                    사용할 닉네임 (2~15자)
+                                </label>
+                                <input
+                                    type="text"
+                                    id="nickname-input"
+                                    placeholder="공유 업무에 표시될 닉네임을 입력하세요"
+                                    value="${state.nickname || ''}"
+                                    maxlength="15"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                    required
+                                />
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="nickname-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="nickname-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    저장
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => setState({ isNicknameModalOpen: false, statusMessage: '' });
+            document.getElementById('nickname-modal-close-btn').onclick = closeHandler;
+            document.getElementById('nickname-modal-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('nickname-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const nicknameInput = document.getElementById('nickname-input');
+                const submitButton = document.getElementById('nickname-modal-submit-btn');
+                
+                submitButton.disabled = true;
+                submitButton.textContent = '저장 중...';
+
+                const success = await window.handleSetNickname(nicknameInput.value);
+                
+                if (!success) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = '저장';
+                }
+            };
+        };
+
+        /**
+         * ?? [추가] 관리자 비밀번호 입력 모달 렌더링
+         */
+        const renderAdminModal = () => {
+            if (!state.isAdminModalOpen) return;
+
+            const modalHtml = `
+                <div id="admin-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-red-700">관리자 모드 활성화</h2>
+                            <button id="admin-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="admin-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="admin-password" class="block text-sm font-medium text-gray-700 mb-1">
+                                    관리자 비밀번호를 입력하세요 (9594)
+                                </label>
+                                <input
+                                    type="password"
+                                    id="admin-password"
+                                    placeholder="비밀번호"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                    required
+                                />
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="admin-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="admin-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-red-500 hover:bg-red-700"
+                                >
+                                    활성화
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => setState({ isAdminModalOpen: false, statusMessage: '' });
+            document.getElementById('admin-modal-close-btn').onclick = closeHandler;
+            document.getElementById('admin-modal-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('admin-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const password = document.getElementById('admin-password').value;
+                window.toggleAdminMode(password);
+            };
+        };
+
+        /**
+         * 표 편집 모달 렌더링
+         */
+        const renderTableModal = () => {
+            if (!state.isTableModalOpen) return;
+
+            const tableData = normalizeTableData(state.tableEditData);
+            const columnWidths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
+            const rowHeights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
+            const rowsHtml = tableData.map((row, rowIndex) => `
+                <tr>
+                    ${row.map((cell, colIndex) => `
+                        <td class="border border-gray-200 p-0 relative ${rowIndex === 0 && colIndex === 0 ? 'bg-amber-200' : rowIndex === 0 ? 'bg-amber-50' : colIndex === 0 ? 'bg-amber-100' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
+                            <input
+                                data-row="${rowIndex}"
+                                data-col="${colIndex}"
+                                value="${escapeAttribute(cell)}"
+                                style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
+                                class="w-full px-2 py-1 text-xs bg-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            />
+                            ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
+                            ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
+                        </td>
+                    `).join('')}
+                </tr>
+            `).join('');
+
+            const modalHtml = `
+                <div id="table-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl transform transition-all scale-100 duration-300 flex flex-col" style="resize: both; overflow: auto; width: 720px; height: 520px; max-width: 90vw; max-height: 90vh; min-width: 320px; min-height: 360px;">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <div>
+                                <h2 class="text-lg font-bold text-indigo-700">표 편집</h2>
+                                <p class="text-xs text-gray-500">업무: <span class="font-semibold text-gray-800">${state.tableEditTitle || ''}</span></p>
+                            </div>
+                            <button id="table-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <div class="p-4 space-y-3 flex-1 min-h-0">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <button id="table-add-row-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        행 추가
+                                    </button>
+                                    <button id="table-add-col-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        열 추가
+                                    </button>
+                                    <button id="table-remove-row-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        행 제거
+                                    </button>
+                                    <button id="table-remove-col-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        열 제거
+                                    </button>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <button id="table-save-btn" class="p-2 text-white bg-indigo-500 rounded-lg hover:bg-indigo-600" aria-label="표 저장" title="표 저장">
+                                        ${createIcon('Save', 'w-4 h-4')}
+                                    </button>
+                                    <button id="table-export-btn" class="px-3 py-1 text-xs font-semibold text-emerald-700 bg-emerald-100 rounded-lg hover:bg-emerald-200">
+                                        엑셀로 내보내기
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="text-xs text-gray-400">열/행 경계를 마우스로 드래그해 크기를 조절합니다. 셀을 수정하면 자동 저장됩니다.</div>
+                            <div class="border border-gray-200 rounded-lg overflow-auto flex-1 min-h-[200px]">
+                                <table class="w-full border-collapse text-sm">
+                                    <tbody>
+                                        ${rowsHtml}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="flex justify-end p-4 pt-0">
+                            <button id="table-modal-close-btn-bottom" class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700">
+                                닫기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => closeTableModal();
+            document.getElementById('table-modal-close-btn').onclick = closeHandler;
+            document.getElementById('table-modal-close-btn-bottom').onclick = closeHandler;
+            document.getElementById('table-add-row-btn').onclick = window.handleTableAddRow;
+            document.getElementById('table-add-col-btn').onclick = window.handleTableAddColumn;
+            document.getElementById('table-remove-row-btn').onclick = () => window.removeSelectedRows();
+            document.getElementById('table-remove-col-btn').onclick = () => window.removeSelectedColumns();
+            document.getElementById('table-save-btn').onclick = () => window.saveTableChanges(false);
+            document.getElementById('table-export-btn').onclick = window.exportTableToExcel;
+
+            document.querySelectorAll('#table-modal input[data-row]').forEach(input => {
+                input.addEventListener('mousedown', (event) => {
+                    if (event.button !== 0) return;
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableIsSelecting = true;
+                    setTableSelection({ startRow: rowIndex, endRow: rowIndex, startCol: colIndex, endCol: colIndex }, document, '#table-modal');
+                });
+                input.addEventListener('focus', (event) => {
+                    const target = event.target;
+                    tableActiveCell = {
+                        row: Number(target.dataset.row),
+                        col: Number(target.dataset.col)
+                    };
+                    if (!tableIsSelecting) {
+                        clearTableSelection(document, '#table-modal');
+                    }
+                });
+                input.addEventListener('mouseover', (event) => {
+                    if (!tableIsSelecting || !tableSelection) return;
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    setTableSelection({ ...tableSelection, endRow: rowIndex, endCol: colIndex }, document, '#table-modal');
+                });
+                input.addEventListener('input', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableCaretMap.set(`${rowIndex}:${colIndex}`, {
+                        start: target.selectionStart ?? 0,
+                        end: target.selectionEnd ?? 0
+                    });
+                    clearTableSelection(document, '#table-modal');
+                    window.handleTableCellInput(rowIndex, colIndex, target.value);
+                });
+                input.addEventListener('paste', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    const pasteText = event.clipboardData?.getData('text');
+                    if (pasteText) {
+                        event.preventDefault();
+                        window.handleTablePaste(rowIndex, colIndex, pasteText);
+                    }
+                });
+                input.addEventListener('keydown', (event) => {
+                    if ((event.key === 'Delete' || event.key === 'Backspace') && isMultiCellSelection(tableSelection)) {
+                        event.preventDefault();
+                        const cleared = window.handleTableDeleteSelection();
+                        if (cleared) applySelectionHighlight(document, '#table-modal');
+                        return;
+                    }
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        window.handleTableEnterKey(rowIndex, colIndex);
+                    }
+                    if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        const target = event.target;
+                        const rowIndex = Number(target.dataset.row);
+                        const colIndex = Number(target.dataset.col);
+                        window.handleTableArrowKey(rowIndex, colIndex, event.key);
+                    }
+                });
+                input.addEventListener('click', (event) => {
+                    const target = event.target;
+                    const rowIndex = Number(target.dataset.row);
+                    const colIndex = Number(target.dataset.col);
+                    tableCaretMap.set(`${rowIndex}:${colIndex}`, {
+                        start: target.selectionStart ?? 0,
+                        end: target.selectionEnd ?? 0
+                    });
+                    if (!tableIsSelecting) {
+                        clearTableSelection(document, '#table-modal');
+                    }
+                });
+            });
+
+            document.addEventListener('mouseup', () => {
+                tableIsSelecting = false;
+            });
+
+            if (tablePendingFocus) {
+                const { row, col } = tablePendingFocus;
+                if (focusTableCell(row, col)) {
+                    tablePendingFocus = null;
+                }
+            }
+
+            attachTableResizeHandlers(document, '#table-modal');
+            applySelectionHighlight(document, '#table-modal');
+            if (tableActiveCell) {
+                focusTableCell(tableActiveCell.row, tableActiveCell.col, false);
+            }
+        };
+
+        /**
+         * 공지사항 모달 렌더링
+         */
+        const renderNoticeModal = () => {
+            if (!state.isNoticeModalOpen) return;
+
+            const notices = state.notices || [];
+            const unreadCount = notices.filter(item => !state.noticeReadMap.get(item.id)).length;
+            const searchTerm = state.noticeSearchTerm.trim().toLowerCase();
+            const filteredNotices = searchTerm
+                ? notices.filter(notice => {
+                    const haystack = `${notice.title || ''} ${notice.content || ''}`.toLowerCase();
+                    return haystack.includes(searchTerm);
+                })
+                : notices;
+
+            const noticeItems = filteredNotices.length === 0
+                ? `
+                    <div class="text-center py-6 text-gray-500 bg-gray-50 rounded-lg">
+                        ${createIcon('Bell', 'w-6 h-6 mx-auto mb-2 text-gray-400')}
+                        <p class="font-medium">${searchTerm ? '검색 결과가 없습니다.' : '등록된 공지사항이 없습니다.'}</p>
+                    </div>
+                `
+                : `
+                    <ul class="space-y-2">
+                        ${filteredNotices.map(notice => `
+                            <li class="flex items-start justify-between p-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition">
+                                <button type="button" class="flex items-start gap-2 text-left flex-1" data-notice-id="${escapeAttribute(notice.id)}">
+                                    <span class="mt-1 w-2 h-2 rounded-full ${state.noticeReadMap.get(notice.id) ? 'bg-transparent' : 'bg-red-500'}"></span>
+                                    <div>
+                                        <div class="text-sm font-semibold text-gray-800">${escapeHtml(notice.title || '제목 없음')}</div>
+                                        <div class="text-xs text-gray-500 mt-1">등록일: ${formatNoticeDate(notice)}</div>
+                                    </div>
+                                </button>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs text-gray-400">${state.noticeReadMap.get(notice.id) ? '읽음' : '미읽음'}</span>
+                                    ${state.isAdmin ? `
+                                        <button type="button" class="notice-edit-btn p-1 text-indigo-500 hover:text-indigo-700" data-notice-edit="${escapeAttribute(notice.id)}" title="공지 수정">
+                                            ${createIcon('Edit2', 'w-4 h-4')}
+                                        </button>
+                                        <button type="button" class="notice-delete-btn p-1 text-red-500 hover:text-red-700" data-notice-delete="${escapeAttribute(notice.id)}" title="공지 삭제">
+                                            ${createIcon('Trash2', 'w-4 h-4')}
+                                        </button>
+                                    ` : ''}
+                                </div>
+                            </li>
+                        `).join('')}
+                    </ul>
+                `;
+
+            const adminActionHtml = state.isAdmin ? `
+                <button
+                    id="open-notice-editor-btn"
+                    class="flex items-center text-xs font-semibold px-3 py-1 bg-indigo-500 hover:bg-indigo-700 text-white rounded-lg shadow transition duration-150"
+                    title="공지사항 등록"
+                >
+                    ${createIcon('PlusCircle', 'w-4 h-4 mr-1')}
+                    공지 등록
+                </button>
+            ` : '';
+
+            const modalHtml = `
+                <div id="notice-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <div>
+                                <h2 class="text-lg font-bold text-indigo-700">공지사항</h2>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    미읽음 ${unreadCount}건${searchTerm ? ` · 검색 ${filteredNotices.length}건` : ''}
+                                </p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                ${adminActionHtml}
+                                <button id="notice-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                    ${createIcon('X', 'w-5 h-5')}
+                                </button>
+                            </div>
+                        </div>
+                        <div class="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                            <div class="flex items-center gap-2">
+                                <input
+                                    id="notice-search-input"
+                                    type="text"
+                                    placeholder="공지 내용 검색"
+                                    value="${escapeAttribute(state.noticeSearchTerm)}"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                />
+                            </div>
+                            ${noticeItems}
+                        </div>
+                        <div class="flex justify-end p-4 pt-0">
+                            <button id="notice-modal-close-btn-bottom" class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700">
+                                닫기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            document.getElementById('notice-modal-close-btn').onclick = closeNoticeModal;
+            document.getElementById('notice-modal-close-btn-bottom').onclick = closeNoticeModal;
+
+            document.querySelectorAll('#notice-modal [data-notice-id]').forEach(button => {
+                button.addEventListener('click', () => {
+                    const noticeId = button.getAttribute('data-notice-id');
+                    window.openNoticeWindow(noticeId);
+                });
+            });
+
+            const searchInput = document.getElementById('notice-search-input');
+            if (searchInput) {
+                searchInput.oncompositionstart = () => {
+                    noticeSearchIsComposing = true;
+                };
+                searchInput.oncompositionend = (event) => {
+                    noticeSearchIsComposing = false;
+                    noticeSearchShouldFocus = true;
+                    noticeSearchCaret = {
+                        start: event.target.selectionStart ?? event.target.value.length,
+                        end: event.target.selectionEnd ?? event.target.value.length
+                    };
+                    setState({ noticeSearchTerm: event.target.value });
+                };
+                searchInput.oninput = (event) => {
+                    if (noticeSearchIsComposing || event.isComposing) return;
+                    noticeSearchShouldFocus = true;
+                    noticeSearchCaret = {
+                        start: event.target.selectionStart ?? event.target.value.length,
+                        end: event.target.selectionEnd ?? event.target.value.length
+                    };
+                    setState({ noticeSearchTerm: event.target.value });
+                };
+                if (noticeSearchShouldFocus) {
+                    searchInput.focus();
+                    const caret = noticeSearchCaret || { start: searchInput.value.length, end: searchInput.value.length };
+                    searchInput.setSelectionRange(caret.start, caret.end);
+                    noticeSearchShouldFocus = false;
+                    noticeSearchCaret = null;
+                }
+            }
+
+            const openEditorButton = document.getElementById('open-notice-editor-btn');
+            if (openEditorButton) {
+                openEditorButton.onclick = () => window.openNoticeEditorWindow('create');
+            }
+
+            document.querySelectorAll('#notice-modal [data-notice-edit]').forEach(button => {
+                button.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    const noticeId = button.getAttribute('data-notice-edit');
+                    window.openNoticeEditorWindow('edit', noticeId);
+                });
+            });
+
+            document.querySelectorAll('#notice-modal [data-notice-delete]').forEach(button => {
+                button.addEventListener('click', async (event) => {
+                    event.stopPropagation();
+                    const noticeId = button.getAttribute('data-notice-delete');
+                    if (!noticeId) return;
+                    const confirmDelete = window.confirm('해당 공지사항을 삭제할까요?');
+                    if (!confirmDelete) return;
+                    await window.handleDeleteNotice(noticeId);
+                });
+            });
+        };
+
+        /**
+         * 메모 보기 모달 렌더링
+         */
+        const renderMemoModal = () => {
+            if (!state.isMemoModalOpen) return;
+
+            const modalHtml = `
+                <div id="memo-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">메모</h2>
+                            <button id="memo-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <div class="p-4 space-y-3">
+                            <div class="text-sm text-gray-500">업무: <span class="font-semibold text-gray-800">${state.memoModalTitle || ''}</span></div>
+                            <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 whitespace-pre-line break-words">
+                                ${state.memoModalContent || '메모 내용이 없습니다.'}
+                            </div>
+                        </div>
+                        <div class="flex justify-end p-4 pt-0">
+                            <button id="memo-modal-close-btn-bottom" class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700">
+                                닫기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            document.getElementById('memo-modal-close-btn').onclick = closeMemoModal;
+            document.getElementById('memo-modal-close-btn-bottom').onclick = closeMemoModal;
+        };
+
+        /**
+         * 관리자 메모 수정 모달 렌더링
+         */
+        const renderMemoEditModal = () => {
+            if (!state.isMemoEditModalOpen) return;
+
+            const modalHtml = `
+                <div id="memo-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-red-700">메모 수정 (관리자)</h2>
+                            <button id="memo-edit-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="memo-edit-form" class="p-4 space-y-4">
+                            <div class="space-y-1">
+                                <div class="text-sm text-gray-500">업무: <span class="font-semibold text-gray-800">${state.memoEditTitle || ''}</span></div>
+                                <textarea
+                                    id="memo-edit-input"
+                                    rows="5"
+                                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                    placeholder="메모를 입력하세요 (비워두면 메모를 삭제합니다)"
+                                >${state.memoEditText || ''}</textarea>
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="memo-edit-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="memo-edit-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-red-500 hover:bg-red-700"
+                                >
+                                    저장
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => closeMemoEditModal();
+            document.getElementById('memo-edit-close-btn').onclick = closeHandler;
+            document.getElementById('memo-edit-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('memo-edit-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const textarea = document.getElementById('memo-edit-input');
+                const submitButton = document.getElementById('memo-edit-submit-btn');
+                submitButton.disabled = true;
+                submitButton.textContent = '저장 중...';
+
+                const success = await window.handleUpdateMemo(textarea.value);
+                if (!success) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = '저장';
+                }
+            };
+        };
+
+        /**
+         * 관리자 업무 수정 모달 렌더링
+         */
+        const renderTaskEditModal = () => {
+            if (!state.isTaskEditModalOpen) return;
+
+            const modalHtml = `
+                <div id="task-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-red-700">업무 수정 (관리자)</h2>
+                            <button id="task-edit-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="task-edit-form" class="p-4 space-y-4">
+                            <div class="space-y-1">
+                                <label for="task-edit-text" class="block text-sm font-medium text-gray-700">
+                                    업무 제목 <span class="text-red-500">*</span>
+                                </label>
+                                <input
+                                    id="task-edit-text"
+                                    type="text"
+                                    value="${escapeAttribute(state.taskEditText)}"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                    required
+                                />
+                            </div>
+                            <div class="space-y-1">
+                                <label for="task-edit-due-date" class="block text-sm font-medium text-gray-700">
+                                    마감일
+                                </label>
+                                <input
+                                    id="task-edit-due-date"
+                                    type="date"
+                                    value="${escapeAttribute(state.taskEditDueDate)}"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                />
+                            </div>
+                            ${state.taskEditIsShared ? `
+                            <div class="space-y-1">
+                                <label for="task-edit-assignee" class="block text-sm font-medium text-gray-700">
+                                    담당자
+                                </label>
+                                <input
+                                    id="task-edit-assignee"
+                                    type="text"
+                                    value="${escapeAttribute(state.taskEditAssignee)}"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                />
+                            </div>
+                            ` : ''}
+                            <div class="space-y-1">
+                                <label for="task-edit-memo" class="block text-sm font-medium text-gray-700">
+                                    메모
+                                </label>
+                                <textarea
+                                    id="task-edit-memo"
+                                    rows="4"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                    placeholder="메모를 입력하세요 (비워두면 삭제)"
+                                >${escapeHtml(state.taskEditMemo)}</textarea>
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="task-edit-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="task-edit-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-red-500 hover:bg-red-700"
+                                >
+                                    저장
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => closeTaskEditModal();
+            document.getElementById('task-edit-close-btn').onclick = closeHandler;
+            document.getElementById('task-edit-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('task-edit-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const submitButton = document.getElementById('task-edit-submit-btn');
+                submitButton.disabled = true;
+                submitButton.textContent = '저장 중...';
+
+                const textInput = document.getElementById('task-edit-text');
+                const dueDateInput = document.getElementById('task-edit-due-date');
+                const assigneeInput = document.getElementById('task-edit-assignee');
+                const memoInput = document.getElementById('task-edit-memo');
+
+                setState({
+                    taskEditText: textInput.value,
+                    taskEditDueDate: dueDateInput.value,
+                    taskEditAssignee: assigneeInput ? assigneeInput.value : '',
+                    taskEditMemo: memoInput.value
+                });
+
+                const success = await window.handleUpdateTask();
+                if (!success) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = '저장';
+                }
+            };
+        };
+
+
+        const renderApp = () => {
+            const appContainer = document.getElementById('app-container');
+            if (!appContainer) return;
+            
+            const existingTaskModal = document.getElementById('task-modal');
+            if (existingTaskModal) {
+                existingTaskModal.parentNode.removeChild(existingTaskModal);
+            }
+            const existingNicknameModal = document.getElementById('nickname-modal');
+            if (existingNicknameModal) {
+                existingNicknameModal.parentNode.removeChild(existingNicknameModal);
+            }
+            const existingAdminModal = document.getElementById('admin-modal');
+            if (existingAdminModal) {
+                existingAdminModal.parentNode.removeChild(existingAdminModal);
+            }
+            const existingNoticeModal = document.getElementById('notice-modal');
+            if (existingNoticeModal) {
+                existingNoticeModal.parentNode.removeChild(existingNoticeModal);
+            }
+            const existingMemoModal = document.getElementById('memo-modal');
+            if (existingMemoModal) {
+                existingMemoModal.parentNode.removeChild(existingMemoModal);
+            }
+            const existingMemoEditModal = document.getElementById('memo-edit-modal');
+            if (existingMemoEditModal) {
+                existingMemoEditModal.parentNode.removeChild(existingMemoEditModal);
+            }
+            const existingTaskEditModal = document.getElementById('task-edit-modal');
+            if (existingTaskEditModal) {
+                existingTaskEditModal.parentNode.removeChild(existingTaskEditModal);
+            }
+            const existingTableModal = document.getElementById('table-modal');
+            if (existingTableModal) {
+                existingTableModal.parentNode.removeChild(existingTableModal);
+            }
+
+
+            // 로딩 화면
+            if (state.loading) {
+                appContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-[50vh] bg-gray-50 p-8">
+                        ${createIcon('Loader', 'w-8 h-8 text-indigo-500 animate-spin mr-2')}
+                        <p class="text-gray-600 mt-3">인증 및 데이터를 불러오는 중...</p>
+                        <p class="text-xs text-gray-400 mt-1">현재 서버 ID: ${appId}</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Firebase 오류 화면
+            if (state.isFirebaseError) {
+                appContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-[50vh] bg-red-50 p-8 rounded-xl border border-red-200">
+                        ${createIcon('AlertTriangle', 'w-12 h-12 text-red-500')}
+                        <h2 class="text-xl font-bold text-red-700 mt-4">앱 초기화 오류</h2>
+                        <p class="text-gray-600 mt-2 text-center">
+                            Firebase 설정에 문제가 있어 앱을 실행할 수 없습니다. 
+                            <br />
+                            콘솔(Console)에 출력된 오류 메시지를 확인해 주세요.
+                        </p>
+                        <div class="mt-4 p-2 bg-red-100 rounded text-sm text-red-600">
+                            <p>상태: ${state.statusMessage}</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+            
+            // [수정] 업무 목록 필터링 (미완료, 완료, 개인/공유 업무 분리)
+            // 공유 업무에 개인 완료 상태를 합침
+            const combinedSharedTasks = state.tasks.map(task => {
+                const isResolved = state.resolutionMap.get(task.id) || false;
+                // 공유 업무는 개인별 완료 상태를 resolutionMap과 합산
+                return { ...task, completed: isResolved, isShared: true };
+            });
+            const combinedPrivateTasks = state.privateTasks.map(task => ({
+                ...task,
+                isShared: false,
+                completed: task.completed || false,
+            }));
+
+            const viewKey = state.currentView === 'resolved' ? 'resolved' : 'unresolved';
+            const isResolvedView = viewKey === 'resolved';
+            const viewFilter = (task) => (isResolvedView ? task.completed : !task.completed);
+
+            const sortByDueDate = (a, b) => {
+                const dateA = a.dueDate ? new Date(a.dueDate) : new Date('9999-12-31');
+                const dateB = b.dueDate ? new Date(b.dueDate) : new Date('9999-12-31');
+                return dateA - dateB;
+            };
+
+            const sharedTasks = combinedSharedTasks.filter(viewFilter).sort(sortByDueDate);
+            const privateTasks = combinedPrivateTasks.filter(viewFilter).sort(sortByDueDate);
+            const allTasks = [...sharedTasks, ...privateTasks].sort(sortByDueDate);
+            const totalCount = allTasks.length;
+
+            const scopeKey = state.taskScope === 'private'
+                ? 'private'
+                : state.taskScope === 'all'
+                    ? 'all'
+                    : 'shared';
+
+            const scopeTasks = scopeKey === 'private'
+                ? privateTasks
+                : scopeKey === 'all'
+                    ? allTasks
+                    : sharedTasks;
+
+            const scopeEmptyText = scopeKey === 'private'
+                ? '이 뷰에 표시할 개인 업무가 없습니다.'
+                : scopeKey === 'all'
+                    ? '이 뷰에 표시할 업무가 없습니다.'
+                    : '이 뷰에 표시할 공유 업무가 없습니다.';
+
+            const taskListHtml = scopeTasks.length === 0
+                ? `
+                    <div class="text-center py-8 text-gray-500 bg-gray-50 rounded-lg mx-2">
+                        ${createIcon('Send', 'w-6 h-6 mx-auto mb-2 text-indigo-400')}
+                        <p class="font-medium">${scopeEmptyText}</p>
+                        <p class="text-sm mt-1">상단의 '+ 업무 등록' 버튼을 눌러 새 업무를 추가해보세요.</p>
+                    </div>
+                `
+                : `<ul class="space-y-3">${scopeTasks.map(renderTaskItem).join('')}</ul>`;
+                
+            // 현재 뷰 제목 설정
+            let viewTitle = '';
+            switch (viewKey) {
+                case 'unresolved':
+                    viewTitle = `미완료 업무`;
+                    break;
+                case 'resolved':
+                    viewTitle = `완료된 업무`;
+                    break;
+            }
+
+            const unreadNoticeCount = (state.notices || []).filter(item => !state.noticeReadMap.get(item.id)).length;
+            const hasUnreadNotices = unreadNoticeCount > 0;
+
+            // 메인 앱 템플릿
+            const appHtml = `
+                <div class="w-full bg-white shadow-2xl rounded-xl overflow-hidden transform transition duration-500 border border-gray-100">
+                    
+                    <!-- 헤더 및 사용자 정보 -->
+                    <div class="p-4 bg-indigo-600 text-white shadow-md window-drag-area relative">
+                        <!-- ?? 명확한 드래그 영역 힌트 -->
+                        <div class="drag-hint"></div> 
+                        <div class="flex items-center justify-between mb-2">
+                            <h1 class="text-2xl font-bold flex items-center window-no-drag">
+                                ${createIcon('Share2', 'w-6 h-6 mr-2')}
+                                업무 공유 플랫폼
+                            </h1>
+                            
+                            <!-- 버튼 그룹 -->
+                            <div class="flex items-start space-x-2 window-no-drag">
+                                <div class="flex flex-col space-y-1">
+                                    <button
+                                        id="open-task-modal-btn"
+                                        class="flex items-center text-sm font-semibold px-3 py-1 bg-indigo-500 hover:bg-indigo-700 rounded-lg shadow transition duration-150"
+                                        title="새 업무 등록"
+                                    >
+                                        ${createIcon('PlusCircle', 'w-4 h-4 mr-1')}
+                                        업무 등록
+                                    </button>
+                                    <button
+                                        id="open-notice-modal-btn"
+                                        class="relative flex items-center justify-center text-xs font-semibold px-3 py-1 bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg shadow transition duration-150"
+                                        title="공지사항 열기"
+                                    >
+                                        ${createIcon('Bell', 'w-4 h-4 mr-1')}
+                                        공지사항
+                                        ${hasUnreadNotices ? `<span class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white"></span>` : ''}
+                                    </button>
+                                </div>
+                                <button
+                                    id="open-nickname-modal-btn"
+                                    class="flex items-center text-sm font-semibold px-3 py-1 bg-gray-700 hover:bg-gray-900 rounded-lg shadow transition duration-150"
+                                    title="내 닉네임 설정"
+                                >
+                                    ${createIcon('User', 'w-4 h-4 mr-1')}
+                                    닉네임 설정
+                                </button>
+                                <!-- ?? [추가] 관리자 모드 토글 버튼 (아이콘 사용) -->
+                                <button
+                                    id="admin-toggle-btn"
+                                    onclick="${state.isAdmin ? 'toggleAdminMode()' : 'setState({ isAdminModalOpen: true })'}"
+                                    class="flex items-center text-sm font-semibold px-2 py-1 rounded-lg shadow transition duration-150 ${state.isAdmin ? 'bg-red-500 hover:bg-red-700 text-white' : 'bg-gray-300 hover:bg-gray-400 text-gray-800'}"
+                                    title="${state.isAdmin ? '관리자 모드 해제' : '관리자 모드 활성화 (9594)'}"
+                                >
+                                    ${createIcon('Settings', 'w-4 h-4')}
+                                </button>
+                            </div>
+                        </div>
+
+                        <p class="text-sm mt-1 opacity-90 truncate window-no-drag">
+                            닉네임: <span class="font-bold bg-indigo-700 px-1 py-0.5 rounded text-sm">${state.nickname || '미설정 (필수 아님)'}</span> 
+                            | ID: <span class="font-mono text-xs">${state.userId ? state.userId.substring(0, 8) + '...' : '로그인 중...'}</span>
+                        </p>
+                        <p class="text-xs font-mono text-gray-200 mt-1 window-no-drag">
+                            현재 서버 ID: ${appId}
+                        </p>
+                    </div>
+                    
+                    <!-- 업무 목록 뷰 선택 탭 -->
+                    <div class="p-3 bg-gray-100 border-b border-gray-200 window-no-drag">
+                        <div class="flex justify-center space-x-2 text-xs font-semibold">
+                            <button onclick="changeView('unresolved')" class="px-3 py-1 rounded-full transition ${state.currentView === 'unresolved' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                미완료 업무
+                            </button>
+                            <button onclick="changeView('resolved')" class="px-3 py-1 rounded-full transition ${state.currentView === 'resolved' ? 'bg-green-600 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                완료된 업무
+                            </button>
+                        </div>
+                        <div class="mt-2 flex justify-center space-x-2 text-xs font-semibold">
+                            <button onclick="changeScope('shared')" class="px-3 py-1 rounded-full transition ${state.taskScope === 'shared' ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                공유 업무 ${sharedTasks.length}건
+                            </button>
+                            <button onclick="changeScope('private')" class="px-3 py-1 rounded-full transition ${state.taskScope === 'private' ? 'bg-gray-700 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                개인 업무 ${privateTasks.length}건
+                            </button>
+                            <button onclick="changeScope('all')" class="px-3 py-1 rounded-full transition ${state.taskScope === 'all' ? 'bg-amber-600 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                전체 보기
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 통합 업무 목록 -->
+                    <div class="p-4 task-list overflow-y-auto hide-scrollbar">
+                        ${taskListHtml}
+                    </div>
+                    
+                    <!-- 하단 상태 메시지 -->
+                    ${state.statusMessage ? `
+                        <div class="p-3 bg-yellow-100 text-yellow-800 text-xs font-medium border-t border-yellow-200">
+                            상태: ${state.statusMessage}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+
+            appContainer.innerHTML = appHtml;
+
+            // 모달 열기 버튼 이벤트 리스너 재설정
+            document.getElementById('open-task-modal-btn').onclick = () => setState({ isTaskModalOpen: true, isNicknameModalOpen: false, statusMessage: '' });
+            document.getElementById('open-nickname-modal-btn').onclick = () => setState({ isNicknameModalOpen: true, isTaskModalOpen: false, statusMessage: '' });
+            document.getElementById('open-notice-modal-btn').onclick = () => setState({ isNoticeModalOpen: true, statusMessage: '' });
+
+            // 모달 렌더링 (state.isTaskModalOpen, isNicknameModalOpen, isAdminModalOpen이 true일 경우)
+            if (state.isTaskModalOpen) {
+                renderTaskRegistrationModal();
+            } else if (state.isNicknameModalOpen) {
+                renderNicknameModal();
+            } else if (state.isAdminModalOpen) {
+                renderAdminModal(); // ?? [추가] 관리자 모달 렌더링
+            } else if (state.isNoticeModalOpen) {
+                renderNoticeModal();
+            } else if (state.isTableModalOpen) {
+                renderTableModal();
+            } else if (state.isTaskEditModalOpen) {
+                renderTaskEditModal();
+            } else if (state.isMemoEditModalOpen) {
+                renderMemoEditModal();
+            } else if (state.isMemoModalOpen) {
+                renderMemoModal();
+            }
+        };
+
+        // ====================================================================
+        // 7. 초기 실행
+        // ====================================================================
+        
+        // 애플리케이션 시작
+        window.onload = initializeFirebase;
+    </script>
+</body>
+</html>
