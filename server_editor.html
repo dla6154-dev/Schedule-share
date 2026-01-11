@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>서버 목록 편집</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; padding: 20px; }
+        .server-item { 
+            background-color: white; 
+            border: 1px solid #e2e8f0; 
+            border-radius: 8px; 
+            padding: 12px; 
+            margin-bottom: 12px; 
+            /* Flexbox 사용하여 요소 정렬 */
+            display: flex;
+            align-items: center;
+        }
+        .input-group {
+            flex-grow: 1;
+            padding-right: 1rem;
+        }
+        .input-group label { display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 4px; }
+        .input-group input { width: 100%; padding: 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 14px; }
+        .status-error { color: #dc2626; }
+    </style>
+</head>
+<body class="p-5">
+    <div class="max-w-xl mx-auto">
+        <h1 class="text-2xl font-bold mb-4 text-indigo-700">팀 서버 목록 편집</h1>
+        <p class="mb-6 text-sm text-gray-600">
+            팀 이름(Label)만 수정하세요. 고유 식별자(App ID)는 자동으로 관리됩니다.
+        </p>
+
+        <div id="server-list-container" class="space-y-3">
+            <!-- 서버 목록이 여기에 렌더링됩니다. -->
+        </div>
+
+        <button id="add-server-btn" class="mt-4 w-full px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-100 rounded-lg hover:bg-indigo-200 transition duration-150 flex items-center justify-center">
+            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+            새 서버 추가
+        </button>
+
+        <p id="status" class="mt-4 text-sm font-semibold status-error"></p>
+
+        <div class="mt-6 flex justify-end space-x-3">
+            <button id="close-btn" class="px-4 py-2 text-sm font-semibold bg-gray-300 rounded-lg hover:bg-gray-400">취소</button>
+            <button id="save-btn" class="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700">저장 및 앱 재시작</button>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+        const container = document.getElementById('server-list-container');
+        const statusElement = document.getElementById('status');
+        let currentTeams = [];
+
+        // UI 렌더링 함수
+        function renderTeams() {
+            container.innerHTML = '';
+            currentTeams.forEach((team, index) => {
+                const item = document.createElement('div');
+                item.className = 'server-item flex items-center space-x-3';
+                item.innerHTML = `
+                    <div class="flex-1 input-group">
+                        <label for="label-${index}">팀 이름 (Label) / App ID: ${team.appId}</label>
+                        <input type="text" id="label-${index}" value="${team.label}" 
+                               data-index="${index}" data-field="label" required>
+                    </div>
+                    <button class="remove-btn bg-red-100 text-red-600 p-2 rounded-full hover:bg-red-200 transition duration-150 flex-shrink-0" data-index="${index}" title="이 서버를 목록에서 제거합니다.">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.86 11.14A2 2 0 0116.14 20H7.86a2 2 0 01-1.99-.86L5 7m14 0H5m1 0V5a2 2 0 012-2h8a2 2 0 012 2v2"></path></svg>
+                    </button>
+                `;
+                container.appendChild(item);
+            });
+
+            // 이벤트 리스너 재할당
+            document.querySelectorAll('.server-item input').forEach(input => {
+                input.addEventListener('input', handleInputChange);
+            });
+            document.querySelectorAll('.remove-btn').forEach(button => {
+                button.addEventListener('click', handleRemove);
+            });
+        }
+
+        // 입력 변경 핸들러
+        function handleInputChange(e) {
+            const index = parseInt(e.target.dataset.index);
+            const field = e.target.dataset.field;
+            currentTeams[index][field] = e.target.value.trim();
+            statusElement.textContent = ''; // 오류 메시지 초기화
+        }
+
+        // 제거 버튼 핸들러
+        function handleRemove(e) {
+            const index = parseInt(e.target.closest('.remove-btn').dataset.index);
+            currentTeams.splice(index, 1);
+            renderTeams();
+        }
+
+        // 새 서버 추가 버튼 핸들러
+        document.getElementById('add-server-btn').addEventListener('click', () => {
+            // 고유한 App ID를 자동으로 생성합니다.
+            const newAppId = `user-team-${Date.now().toString().slice(-6)}`;
+            currentTeams.push({
+                label: '새 팀 (이름 수정)',
+                appId: newAppId 
+            });
+            renderTeams();
+            container.scrollTop = container.scrollHeight; // 스크롤 맨 아래로 이동
+        });
+
+        // 1. JSON 로드 요청 (main.js에서 팀 목록을 받아옴)
+        ipcRenderer.send('request-team-list');
+        ipcRenderer.on('response-team-list', (event, data) => {
+            currentTeams = data;
+            renderTeams();
+        });
+
+        // 2. 저장 버튼 클릭 시
+        document.getElementById('save-btn').addEventListener('click', () => {
+            // 유효성 검증 (App ID는 이미 main.js에서 로드/자동 생성되었으므로 label만 검증)
+            if (currentTeams.length === 0) {
+                 statusElement.textContent = '오류: 팀 목록이 비어있습니다.';
+                 return;
+            }
+            
+            for (const team of currentTeams) {
+                if (team.label.length < 1) {
+                    statusElement.textContent = `오류: 모든 팀 이름은 1자 이상이어야 합니다.`;
+                    return;
+                }
+                // App ID의 유효성은 main.js가 책임집니다. 여기서는 변경되지 않음을 가정합니다.
+            }
+
+            // 메인 프로세스에 저장 요청 및 앱 재시작 요청
+            ipcRenderer.send('save-team-list', currentTeams);
+            statusElement.textContent = '저장 중... 앱이 곧 재시작됩니다.';
+        });
+        
+        // 3. 취소 버튼 클릭 시
+        document.getElementById('close-btn').addEventListener('click', () => {
+            window.close();
+        });
+
+        // 4. 저장 완료 후 닫기
+        ipcRenderer.on('save-success-close', () => {
+             window.close();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,1454 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>업무 공유 플랫폼</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Inter 폰트 사용 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        /* 창 드래그 가능 영역 설정 */
+        .window-drag-area {
+             -webkit-app-region: drag;
+             cursor: grab; 
+        }
+        .window-no-drag {
+             -webkit-app-region: no-drag;
+             cursor: default;
+        }
+        /* 드래그 힌트를 위한 스타일 추가 */
+        .drag-hint {
+            height: 8px; /* 드래그 영역 높이 */
+            background-color: rgba(255, 255, 255, 0.2);
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            transition: background-color 0.3s;
+        }
+        .drag-hint:hover {
+            background-color: rgba(255, 255, 255, 0.4);
+        }
+        /* 스크롤바 숨기기 (선택적) */
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .hide-scrollbar {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+        .task-list {
+            /* 헤더 및 푸터 공간을 제외한 높이로 설정 */
+            min-height: 10rem;
+            max-height: calc(100vh - 200px); 
+        }
+        /* 모달이 닫힐 때 DOM에서 제거되도록 처리 */
+        .modal-hidden {
+            display: none;
+        }
+    </style>
+</head>
+<!-- 창 크기 고정을 위해 중앙 정렬 및 적절한 여백을 다시 추가합니다. -->
+<body class="min-h-screen bg-gray-50 flex flex-col items-center justify-start p-4 md:p-8">
+
+    <!-- 애플리케이션 컨테이너: 최대 너비를 max-w-xl (약 1280px)로 통일/고정하고, 창에 꽉 차는 모드는 제거합니다. -->
+    <div id="app-container" class="w-full max-w-xl">
+        <!-- 앱 내용이 여기에 렌더링됩니다. -->
+    </div>
+
+    <!-- Firebase SDK (모듈) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // [IPC 통신을 위한 ipcRenderer 변수 선언]
+        let ipcRenderer = null;
+        if (window.require) {
+             try {
+                // Electron 환경에서 ipcRenderer를 가져옵니다.
+                ipcRenderer = window.require('electron').ipcRenderer;
+            } catch (e) {
+                console.warn("Electron IPC is not available.");
+            }
+        }
+
+
+        // ====================================================================
+        // 1. Firebase 설정 및 전역 변수
+        // ====================================================================
+
+        let appId = null; 
+        
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyCkxPbMl7dqDEC_6XuN6w3IY5WjwGU8xOw",
+            authDomain: "schedule-62efa.firebaseapp.com",
+            projectId: "schedule-62efa",
+            storageBucket: "schedule-62efa.firebasestorage.app",
+            messagingSenderId: "939052806030",
+            appId: "1:939052806030:web:04b2817544ede8013b7edf",
+            measurementId: "G-FBB6X7J1NM"
+        };
+        
+        const initialAuthToken = null; 
+        const firebaseConfig = FIREBASE_CONFIG;
+
+        // 전역 상태
+        let state = {
+            tasks: [], // 모든 공유 업무
+            privateTasks: [], // 개인 업무
+            resolutionMap: new Map(), // 공유 업무의 개인별 완료 상태 (taskId -> { resolved: true/false })
+            userId: null,
+            isAuthReady: false,
+            loading: true,
+            statusMessage: '',
+            isTaskModalOpen: false, 
+            isNicknameModalOpen: false, 
+            isFirebaseError: false,
+            db: null,
+            auth: null,
+            app: null,
+            nickname: null, 
+            unsubscribeProfile: null,
+            unsubscribeShared: null,
+            unsubscribeResolution: null,
+            unsubscribePrivate: null,
+            currentView: 'unresolved', // 'unresolved' | 'resolved' | 'all'
+            isAdmin: false, // ?? [추가] 관리자 모드 상태
+            isAdminModalOpen: false, // ?? [추가] 관리자 비밀번호 모달 상태
+            isMemoModalOpen: false,
+            memoModalContent: '',
+            memoModalTitle: ''
+        };
+
+        // ====================================================================
+        // 2. Utility (도움) 함수 및 아이콘 설정 (생략)
+        // ====================================================================
+        
+        const Icons = {
+            PlusCircle: `<circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/>`,
+            Trash2: `<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>`,
+            CheckCircle: `<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/>`,
+            Circle: `<circle cx="12" cy="12" r="10"/>`,
+            Share2: `<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>`,
+            User: `<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`,
+            Send: `<line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`,
+            Loader: `<line x1="12" x2="12" y1="2" y2="6"/><line x1="12" x2="12" y1="18" y2="22"/><line x1="4.93" x2="7.76" y1="4.93" y2="7.76"/><line x1="16.24" x2="19.07" y1="16.24" y2="19.07"/><line x1="2" x2="6" y1="12" y2="12"/><line x1="18" x2="22" y1="12" y2="12"/><line x1="4.93" x2="7.76" y1="19.07" y2="16.24"/><line x1="16.24" x2="19.07" y1="7.76" y2="4.93"/>`,
+            AlertTriangle: `<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/>`,
+            X: `<line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/>`,
+            Info: `<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/>`,
+            Settings: `<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.78 1.46a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.74v.44a2 2 0 0 1-1 1.74l-.15.08a2 2 0 0 0-.73 2.73l.78 1.46a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.78-1.46a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.44a2 2 0 0 1 1-1.74l.15-.08a2 2 0 0 0 .73-2.73l-.78-1.46a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>`,
+        };
+
+        const createIcon = (name, classes = 'w-5 h-5') => {
+            const svgContent = Icons[name];
+            if (!svgContent) return '';
+            return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${classes}">${svgContent}</svg>`;
+        };
+
+        const getDueDateInfo = (dateString) => {
+            if (!dateString) return { formattedDate: '마감일 없음', statusText: '날짜 미지정', isLate: false };
+            
+            const date = new Date(dateString);
+            const now = new Date();
+            
+            const dueDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+            const diffTime = dueDay - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            let statusText;
+            let isLate = diffDays < 0;
+
+            if (diffDays === 0) {
+                statusText = 'D-DAY';
+            } else if (diffDays > 0) {
+                statusText = `D-${diffDays}`;
+            } else { 
+                statusText = `D+${Math.abs(diffDays)}`;
+            }
+
+            const formattedDate = `${date.getFullYear()}. ${String(date.getMonth() + 1).padStart(2, '0')}. ${String(date.getDate()).padStart(2, '0')}.`;
+            
+            return { formattedDate, statusText, isLate };
+        };
+
+
+        const setState = (newState) => {
+            state = { ...state, ...newState };
+            renderApp();
+        };
+        // 모듈 스코프라서 전역 접근이 필요할 때를 대비해 window에 바인딩
+        window.setState = setState;
+        
+        /**
+         * 뷰를 전환하는 함수
+         */
+        window.changeView = (view) => {
+            setState({ currentView: view });
+        };
+
+        /**
+         * 메모 모달 열기/닫기
+         */
+        window.openMemoModal = (taskId) => {
+            const allTasks = [...state.tasks, ...state.privateTasks];
+            const targetTask = allTasks.find(t => t.id === taskId);
+            if (!targetTask || !targetTask.memo) return;
+            setState({
+                isMemoModalOpen: true,
+                memoModalContent: targetTask.memo,
+                memoModalTitle: targetTask.text || '메모'
+            });
+        };
+
+        const closeMemoModal = () => {
+            setState({
+                isMemoModalOpen: false,
+                memoModalContent: '',
+                memoModalTitle: ''
+            });
+        };
+        
+        /**
+         * [추가] 관리자 모드 토글 함수
+         *  - 비밀번호(9594) 입력 시 관리자 모드 활성화
+         *  - 활성화 상태에서 다시 호출하면 해제
+         */
+        window.toggleAdminMode = (password = null) => {
+            if (state.isAdmin) {
+                setState({ 
+                    isAdmin: false,
+                    isAdminModalOpen: false,
+                    statusMessage: "관리자 모드가 비활성화되었습니다."
+                });
+                return;
+            }
+            
+            if (password === '9594') {
+                setState({ 
+                    isAdmin: true,
+                    isAdminModalOpen: false,
+                    statusMessage: "관리자 모드가 활성화되었습니다. 공유 업무를 영구 삭제할 수 있습니다."
+                });
+            } else {
+                setState({ 
+                    statusMessage: "잘못된 관리자 비밀번호입니다. 다시 입력해주세요.",
+                    isAdminModalOpen: true
+                });
+            }
+        };
+
+        // ====================================================================
+        // 3. Firebase 및 데이터 로직
+        // ====================================================================
+        
+        /**
+         * Firestore 실시간 리스너 정리
+         */
+        const cleanupListeners = () => {
+            if (state.unsubscribeProfile) state.unsubscribeProfile();
+            if (state.unsubscribeShared) state.unsubscribeShared();
+            if (state.unsubscribeResolution) state.unsubscribeResolution(); 
+            if (state.unsubscribePrivate) state.unsubscribePrivate();
+
+            state.unsubscribeProfile = null;
+            state.unsubscribeShared = null;
+            state.unsubscribeResolution = null; 
+            state.unsubscribePrivate = null;
+        };
+        
+        // Firestore 컬렉션 참조를 계산
+        const getCollectionRefs = () => {
+            const { db, userId } = state;
+            if (!db || !userId || !appId) return {}; 
+            
+            // 팀 공유 업무 (Public Data)
+            const sharedRef = collection(db, `artifacts/${appId}/public/data/shared_tasks`);
+            
+            // [추가] 개인별 완료 상태 (Private Data)
+            const resolutionRef = collection(db, `artifacts/${appId}/users/${userId}/resolution_status`); 
+            const privateRef = collection(db, `artifacts/${appId}/users/${userId}/private_tasks`);
+
+            return { sharedRef, resolutionRef, privateRef };
+        };
+
+        // Firestore 프로필 리스너 설정 (변경 없음)
+        const setupProfileListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            const profileDocRef = doc(state.db, `artifacts/${appId}/users/${state.userId}/profile/data`);
+
+            if (state.unsubscribeProfile) state.unsubscribeProfile();
+
+            const unsubscribeProfile = onSnapshot(profileDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    setState({ nickname: data.nickname || null, statusMessage: '' }); 
+                } else {
+                    setState({ nickname: null, statusMessage: '공유 업무 작성을 위해 닉네임을 설정해주세요.' });
+                }
+            }, (error) => {
+                console.error("프로필 실시간 리스너 오류:", error);
+                setState({ statusMessage: `프로필 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeProfile = unsubscribeProfile;
+        };
+        
+        // 이전에 로드된 작업 ID를 저장하여 중복 알림을 방지하고 새 항목만 처리
+        let loadedSharedTaskIds = new Set();
+
+        // [추가] 개인 완료 상태 리스너 설정
+        const setupResolutionListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+            
+            if (state.unsubscribeResolution) state.unsubscribeResolution();
+
+            const { resolutionRef } = getCollectionRefs();
+            if (!resolutionRef) return;
+
+            const unsubscribeResolution = onSnapshot(query(resolutionRef), (snapshot) => {
+                const resolutionMap = new Map();
+                snapshot.docs.forEach(doc => {
+                    const data = doc.data();
+                    // doc.id는 taskId와 동일하며, resolved 필드의 true/false 값을 저장
+                    resolutionMap.set(doc.id, data.resolved); 
+                });
+                setState({ resolutionMap });
+            }, (error) => {
+                console.error("개인 완료 상태 리스너 오류:", error);
+                setState({ statusMessage: `개인 완료 상태 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribeResolution = unsubscribeResolution;
+        };
+
+        // [복원] 개인 업무 실시간 리스너
+        const setupPrivateListener = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+
+            if (state.unsubscribePrivate) state.unsubscribePrivate();
+
+            const { privateRef } = getCollectionRefs();
+            if (!privateRef) return;
+
+            const unsubscribePrivate = onSnapshot(query(privateRef), (snapshot) => {
+                const privateTasks = snapshot.docs.map(docSnap => {
+                    const data = docSnap.data();
+                    return {
+                        id: docSnap.id,
+                        ...data,
+                        isShared: false,
+                        completed: data.completed ?? false,
+                    };
+                });
+
+                setState({ privateTasks, loading: false });
+            }, (error) => {
+                console.error("개인 업무 실시간 리스너 오류:", error);
+                setState({ statusMessage: `개인 업무 데이터 로드 오류: ${error.message}` });
+            });
+
+            state.unsubscribePrivate = unsubscribePrivate;
+        };
+
+
+        // Firebase 실시간 리스너 설정 (문제 2 해결: 알림 로직 변경)
+        const setupFirestoreListeners = () => {
+            if (state.isFirebaseError || !state.isAuthReady || !state.userId || !state.db || !appId) return;
+            
+            // 리스너 재설정 전에 기존 리스너를 정리합니다.
+            cleanupListeners(); 
+            loadedSharedTaskIds.clear();
+            let localIsInitialLoad = true; // 리스너가 호출될 때마다 초기화 (첫 스냅샷 여부)
+
+            const { sharedRef } = getCollectionRefs();
+            if (!sharedRef) return;
+            
+            // [추가] 개인 완료 상태 리스너도 설정
+            setupResolutionListener(); 
+            setupPrivateListener();
+
+            // 1. 공유 업무 리스너 (알림 로직 포함)
+            const unsubscribeShared = onSnapshot(query(sharedRef), (snapshot) => {
+                const fetchedTasks = [];
+                const currentUserId = state.userId; // 현재 사용자 ID
+
+                // ?? 초기 로딩 시 모든 ID를 Set에 추가합니다. (새로고침 시 알림 방지)
+                if (localIsInitialLoad) {
+                    snapshot.docs.forEach(doc => loadedSharedTaskIds.add(doc.id));
+                    localIsInitialLoad = false;
+                    console.log(`[Notification Debug] Initial load completed with ${loadedSharedTaskIds.size} tasks. Notification system active.`);
+                }
+                
+                snapshot.docChanges().forEach(change => {
+                    const taskData = {
+                        id: change.doc.id,
+                        ...change.doc.data(),
+                        isShared: true,
+                    };
+                    
+                    if (change.type === "added") {
+                        
+                        // ?? 알림 요청 조건: 1. Set에 없는 ID (진짜 새로 추가된 문서), 2. 등록자가 내가 아닐 때
+                        if (!loadedSharedTaskIds.has(taskData.id) && taskData.creatorId !== currentUserId && ipcRenderer) {
+                            
+                            const notificationTitle = `?? 새 공유 업무 도착 (${appId})`;
+                            const notificationBody = `${taskData.creatorName} 님이 등록했습니다: ${taskData.text.substring(0, 30)}...`;
+                            
+                            console.log(`[Notification Request SENT] Title: ${notificationTitle} | Body: ${notificationBody}`); // 디버깅 로그 추가
+                            
+                            ipcRenderer.send('show-notification', { 
+                                title: notificationTitle,
+                                body: notificationBody
+                            });
+                        }
+                        
+                        // 항상 Set에 추가하여, 다음 루프에서 중복 알림을 방지합니다.
+                        loadedSharedTaskIds.add(taskData.id);
+                    }
+                    // 'modified' 또는 'removed' 항목에 대해서는 알림을 보내지 않습니다.
+                });
+
+                // 전체 문서 목록을 다시 구성
+                snapshot.docs.forEach(doc => {
+                    fetchedTasks.push({
+                        id: doc.id,
+                        ...doc.data(),
+                        isShared: true
+                    });
+                });
+
+                // [수정] tasks만 업데이트하고, loading 상태를 업데이트
+                setState({ tasks: fetchedTasks, loading: false });
+            }, (error) => {
+                console.error("공유 업무 실시간 리스너 오류:", error);
+                setState({ statusMessage: `공유 업무 데이터 로드 오류: ${error.message}` });
+            });
+        };
+        
+        // 닉네임 설정 함수 (변경 없음)
+        window.handleSetNickname = async (newNickname) => {
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+
+            const trimmedNickname = newNickname.trim();
+            if (trimmedNickname.length < 2 || trimmedNickname.length > 15) {
+                setState({ statusMessage: "닉네임은 2자 이상 15자 이하로 설정해주세요." });
+                return false;
+            }
+
+            const profileDocRef = doc(state.db, `artifacts/${appId}/users/${state.userId}/profile/data`);
+
+            try {
+                // 닉네임 업데이트
+                await setDoc(profileDocRef, { nickname: trimmedNickname }, { merge: true });
+                // 닉네임은 setupProfileListener에서 업데이트하므로 여기서는 모달만 닫음
+                setState({ statusMessage: `닉네임이 '${trimmedNickname}'(으)로 설정되었습니다.`, isNicknameModalOpen: false }); 
+                return true;
+            } catch (error) {
+                console.error("닉네임 설정 오류:", error);
+                setState({ statusMessage: `닉네임 설정 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        // Task 추가 함수 (등록 후 알림 요청 제거, 리스너가 처리)
+        const handleAddTask = async (text, dueDate, isSharedType, memoText) => {
+            if (state.isFirebaseError || !state.db || !state.userId || !appId) {
+                setState({ statusMessage: "인증 정보를 불러오는 중이거나 Firebase 오류입니다." });
+                return false;
+            }
+            
+            const { sharedRef, privateRef } = getCollectionRefs();
+
+            // 개인 업무 저장 처리
+            if (!isSharedType) {
+                if (!privateRef) {
+                    setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                    return false;
+                }
+
+                const privateTaskData = {
+                    text: text.trim(),
+                    dueDate: dueDate || null,
+                    memo: memoText?.trim() ? memoText.trim() : null,
+                    completed: false,
+                    createdAt: serverTimestamp(),
+                    creatorId: state.userId,
+                };
+
+                try {
+                    await setDoc(doc(privateRef), privateTaskData);
+                    setState({ 
+                        statusMessage: "개인 업무에 등록되었습니다.", 
+                        isTaskModalOpen: false 
+                    });
+                    return true;
+                } catch (error) {
+                    console.error("개인 업무 추가 오류:", error);
+                    setState({ statusMessage: `개인 업무 추가 중 오류가 발생했습니다: ${error.message}` });
+                    return false;
+                }
+            }
+
+            // 공유 업무이면서 닉네임이 설정되지 않았다면 경고
+            if (!state.nickname) {
+                 setState({ statusMessage: "공유 업무를 등록하려면 먼저 닉네임을 설정해주세요.", isTaskModalOpen: false, isNicknameModalOpen: true });
+                 return false;
+            }
+
+            const taskData = {
+                text: text.trim(),
+                dueDate: dueDate || null,
+                memo: memoText?.trim() ? memoText.trim() : null,
+                // completed 필드 제거 (개인 완료 상태는 resolutionMap에서 관리)
+                createdAt: serverTimestamp(),
+                creatorId: state.userId,
+                // 닉네임 또는 잘린 ID를 작성자 이름으로 저장
+                creatorName: state.nickname || `ID ${state.userId.substring(0, 8)}...`, 
+            };
+
+            try {
+                if (!sharedRef) {
+                    setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                    return false;
+                }
+                // addDoc 대신 doc(ref)으로 참조를 가져와 setDoc을 사용합니다.
+                await setDoc(doc(sharedRef), taskData); 
+                
+                const message = "팀 공유 업무에 등록되었습니다.";
+                setState({ 
+                    statusMessage: message, 
+                    isTaskModalOpen: false // 업무 모달 닫기
+                });
+                
+                return true;
+            } catch (error) {
+                console.error("업무 추가 오류:", error);
+                setState({ statusMessage: `업무 추가 중 오류가 발생했습니다: ${error.message}` });
+                return false;
+            }
+        };
+
+        // Task 상태 토글 함수 (?? 공유 업무는 개인 완료 상태를 업데이트하도록 수정)
+        window.handleToggleTask = async (taskId, isShared) => {
+            if (state.isFirebaseError || !state.db || !appId) {
+                setState({ statusMessage: "Firebase 오류로 인해 상태를 변경할 수 없습니다." });
+                return; 
+            }
+            
+            const { resolutionRef, privateRef } = getCollectionRefs();
+            
+            // 개인 업무 토글
+            if (!isShared) {
+                 if (!privateRef) {
+                     setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                     return;
+                 }
+
+                 const targetTask = state.privateTasks.find(t => t.id === taskId);
+                 const newStatus = targetTask ? !targetTask.completed : true;
+                 const privateDocRef = doc(privateRef, taskId);
+
+                 try {
+                     await setDoc(privateDocRef, { completed: newStatus, updatedAt: serverTimestamp() }, { merge: true });
+                     setState({ statusMessage: `개인 업무가 ${newStatus ? '완료' : '미완료'} 처리되었습니다.` });
+                 } catch (error) {
+                     console.error("개인 업무 토글 오류:", error);
+                     setState({ statusMessage: `개인 업무 상태 변경 중 오류가 발생했습니다: ${error.message}` });
+                 }
+                 return;
+            }
+
+            // 1. 공유 업무: 개인별 완료 상태를 resolution_status에 저장/토글
+            if (!resolutionRef) {
+                setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                return;
+            }
+            const isResolved = state.resolutionMap.get(taskId) || false;
+            const resolutionDocRef = doc(resolutionRef, taskId);
+            
+            try {
+                // resolved 상태가 true이면 문서를 삭제하여 Map에서 제거 (미완료 처리), false이면 true로 설정
+                if (isResolved) {
+                    await deleteDoc(resolutionDocRef);
+                } else {
+                     await setDoc(resolutionDocRef, { resolved: true, taskId: taskId, resolvedAt: serverTimestamp() });
+                }
+
+                setState({ statusMessage: `공유 업무가 개인적으로 ${isResolved ? '미완료' : '완료'} 처리되었습니다.` });
+            } catch (error) {
+                console.error("개인 완료 상태 토글 오류:", error);
+                setState({ statusMessage: `공유 업무 완료 상태 변경 중 오류가 발생했습니다: ${error.message}` });
+            }
+        };
+
+        // Task 삭제 함수 (?? 관리자 모드에 따라 동작 변경)
+        window.handleDeleteTask = async (taskId, isShared) => {
+            if (state.isFirebaseError || !state.db || !appId) {
+                setState({ statusMessage: "Firebase 오류로 인해 삭제할 수 없습니다." });
+                return; 
+            }
+            
+            const { sharedRef, resolutionRef, privateRef } = getCollectionRefs();
+            
+            if (isShared) {
+                
+                if (state.isAdmin) {
+                    if (!sharedRef) {
+                        setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                        return;
+                    }
+                    // ?? [수정] 관리자 모드: Firestore에서 공유 업무 문서 자체를 영구 삭제
+                    if (!window.confirm(`[관리자 모드] 팀 공유 업무를 영구 삭제하시겠습니까? 팀 전체에서 사라집니다!`)) {
+                        return;
+                    }
+
+                    try {
+                        const taskDocRef = doc(sharedRef, taskId);
+                        await deleteDoc(taskDocRef);
+                        
+                        // [추가] 관리자가 삭제 시, 모든 사용자의 resolution_status 문서도 정리 (선택적)
+                        if (resolutionRef) {
+                            const resolutionDocRef = doc(resolutionRef, taskId);
+                            await deleteDoc(resolutionDocRef);
+                        }
+
+                        setState({ statusMessage: `[관리자] 공유 업무가 영구 삭제되었습니다.` });
+                    } catch (error) {
+                        console.error("공유 업무 영구 삭제 오류:", error);
+                        setState({ statusMessage: `[관리자] 공유 업무 삭제 중 오류 발생: ${error.message}` });
+                    }
+                    return;
+                } 
+                
+                // ?? 일반 사용자 모드: 실제 삭제 대신 개인 완료 상태를 토글
+                if (!resolutionRef) {
+                     setState({ statusMessage: "공유 업무 저장소를 찾을 수 없습니다." });
+                     return;
+                 }
+                if (!window.confirm(`공유 업무는 팀 전체에서 삭제할 수 없습니다. 개인적으로 [완료] 상태로 처리하시겠습니까?`)) {
+                     return;
+                 }
+                window.handleToggleTask(taskId, true); // 개인 완료 상태로 토글
+                 return; 
+            } 
+
+            // 개인 업무 삭제
+            if (!privateRef) {
+                setState({ statusMessage: "개인 업무 저장소를 찾을 수 없습니다." });
+                return;
+            }
+
+            if (!window.confirm('개인 업무를 삭제하시겠습니까?')) {
+                return;
+            }
+
+            try {
+                const taskDocRef = doc(privateRef, taskId);
+                await deleteDoc(taskDocRef);
+                setState({ statusMessage: "개인 업무가 삭제되었습니다." });
+            } catch (error) {
+                console.error("개인 업무 삭제 오류:", error);
+                setState({ statusMessage: `개인 업무 삭제 중 오류가 발생했습니다: ${error.message}` });
+            }
+        };
+        // ====================================================================
+        // Firebase 초기화 및 인증
+        // ====================================================================
+        const initializeFirebase = async () => {
+            try {
+                // Firebase 초기화 시 config 유효성 검사
+                if (!firebaseConfig.apiKey) {
+                    throw new Error("Firebase config is missing or invalid.");
+                }
+
+                const app = initializeApp(firebaseConfig);
+                const db = getFirestore(app);
+                const auth = getAuth(app);
+                
+                setState({ app, db, auth });
+
+                // 실제 Firebase 인증 시도
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // onAuthStateChanged 리스너
+                onAuthStateChanged(auth, (user) => {
+                    const userId = user ? user.uid : null;
+                    const initialLoading = appId === null;
+                    setState({ userId, isAuthReady: true, loading: initialLoading }); 
+
+                    // 인증 완료 후, appId가 이미 설정된 경우 (main.js에서 받은 경우)만 리스너 설정
+                    if (userId && appId !== null) {
+                        setupFirestoreListeners();
+                        setupProfileListener(); 
+                    }
+                });
+                
+            } catch (error) {
+                console.error("Firebase 초기화 또는 인증 오류:", error);
+                setState({ 
+                    isFirebaseError: true, 
+                    loading: false, 
+                    statusMessage: `앱 초기화 중 오류가 발생했습니다. ${error.message}` 
+                });
+            }
+        };
+
+        // ====================================================================
+        // 5. 서버 전환 로직 (IPC 수신 - 변경 없음)
+        // ====================================================================
+
+        /**
+         * IPC를 통해 새 서버 ID를 수신하고 데이터 리스너를 재설정합니다.
+         * @param {string} newAppId 새로 선택된 서버/팀의 ID
+         */
+        const switchServer = (newAppId) => {
+            // [추가] 서버 ID가 변경되지 않으면 아무것도 하지 않음
+            if (newAppId === appId) return;
+
+            // 1. 전역 appId 업데이트
+            appId = newAppId;
+            
+            // 2. 상태 초기화 및 로딩 시작
+            setState({ 
+                statusMessage: `서버가 '${newAppId}'(으)로 전환되었습니다. 데이터 로드 중...`,
+                tasks: [],
+                privateTasks: [],
+                resolutionMap: new Map(),
+                isMemoModalOpen: false,
+                memoModalContent: '',
+                memoModalTitle: '',
+                loading: true,
+            });
+            
+            // 3. 인증이 완료된 상태라면 리스너 재설정
+            if (state.isAuthReady && state.db && state.userId) {
+                setupFirestoreListeners();
+                setupProfileListener(); 
+            } else if (state.isAuthReady) {
+                // 인증은 되었는데 userId가 없다면, 리스너 설정 없이 로딩 해제 (should not happen with anonymous sign in)
+                setState({ loading: false });
+            }
+        };
+
+        // [추가] Electron main 프로세스에서 보낸 'set-server-id' 이벤트 수신
+        if (ipcRenderer) {
+            ipcRenderer.on('set-server-id', (event, newAppId) => {
+                // 앱 시작 시 main.js에서 받은 초기 ID를 여기서 설정하고 데이터 로드를 시작
+                if (appId === null || appId !== newAppId) {
+                    switchServer(newAppId);
+                }
+            });
+        }
+        
+
+        // ====================================================================
+        // 6. UI 렌더링 로직 (HTML Template - UI 분리)
+        // ====================================================================
+        
+        /**
+         * 단일 업무 항목을 렌더링
+         */
+        const renderTaskItem = (task) => {
+            const { formattedDate, statusText, isLate } = getDueDateInfo(task.dueDate);
+            const isShared = task.isShared;
+            
+            const creatorDisplay = task.creatorName || (task.creatorId ? `ID ${state.userId.substring(0, 8)}...` : '익명');
+
+            // ?? [수정] 완료 상태는 이제 resolutionMap에서 가져옵니다 (공유 업무일 경우).
+            const isResolvedByUser = isShared && state.resolutionMap.get(task.id);
+            const isCompleted = isShared ? isResolvedByUser : task.completed;
+            
+            const liClasses = `relative flex items-start p-2 rounded-xl shadow-md transition duration-150 ease-in-out border-l-4 ${
+                isCompleted
+                    ? 'bg-green-50 border-green-400 opacity-70 line-through'
+                    : isShared 
+                        ? 'bg-white border-indigo-500 hover:shadow-lg'
+                        : 'bg-white border-green-500 hover:shadow-lg'
+            }`;
+
+            const dDayClasses = `text-xs px-2 py-0.5 rounded font-bold flex-shrink-0 transition duration-150 ${
+                isCompleted 
+                    ? 'bg-gray-200 text-gray-500' 
+                    : isLate 
+                        ? 'bg-red-500 text-white shadow-md'
+                        : 'bg-indigo-500 text-white shadow-md'
+            }`;
+
+            const typeBadgeClasses = `text-xs font-semibold px-2 py-0.5 rounded-full ${
+                isShared 
+                ? 'bg-indigo-100 text-indigo-700' 
+                : 'bg-green-100 text-green-700'
+            }`;
+            
+            const toggleIcon = isCompleted ? createIcon('CheckCircle', 'w-5 h-5') : createIcon('Circle', 'w-5 h-5');
+            const toggleColor = isCompleted ? 'text-green-500' : 'text-gray-400 hover:text-indigo-500';
+
+            // [수정] 삭제 버튼의 텍스트와 색상을 관리자 모드에 따라 변경
+            const deleteButtonClasses = state.isAdmin 
+                ? 'text-red-500 hover:text-red-700 bg-red-100 hover:bg-red-200 rounded-full p-1'
+                : 'text-gray-300 hover:text-red-500';
+            const deleteButtonTooltip = state.isAdmin ? '[관리자] 영구 삭제' : '개인 완료 처리';
+
+            return `
+                <li class="${liClasses}">
+                    <!-- 완료 토글 버튼 -->
+                    <button
+                        onclick="window.handleToggleTask('${task.id}', ${isShared})"
+                        class="flex-shrink-0 mt-1 mr-3 ${toggleColor} window-no-drag"
+                        aria-label="${isCompleted ? "미완료로 표시" : "완료로 표시"}"
+                    >
+                        ${toggleIcon}
+                    </button>
+
+                    <!-- 업무 내용 및 정보 -->
+                    <div class="flex-grow min-w-0 pr-12">
+                        <p class="text-base font-medium break-words ${isCompleted ? 'text-gray-500' : 'text-gray-800'} mb-1">
+                            ${task.text}
+                        </p>
+
+                        <!-- 하단 정보 라인 -->
+                        <div class="flex items-center space-x-3 mt-1 text-xs">
+                            <!-- 유형 배지 -->
+                            <span class="${typeBadgeClasses}">
+                                ${isShared ? '공유 업무' : '개인 업무'}
+                            </span>
+
+                            <!-- 작성자 이름 (공유 업무일 경우만 표시) -->
+                            ${isShared && (task.creatorName || task.creatorId) ? `
+                                <span class="text-gray-500">
+                                    작성자: <span class="font-medium text-gray-700">${creatorDisplay}</span>
+                                </span>
+                            ` : ''}
+
+                            <!-- 마감일 정보 -->
+                            ${task.dueDate ? `
+                                <span class="text-gray-500">
+                                    마감: ${formattedDate}
+                                </span>
+                            ` : ''}
+                        </div>
+                    </div>
+
+                    <!-- D-Day & Action Buttons -->
+                    <div class="absolute top-2 right-2 flex flex-col items-end space-y-1.5">
+                        ${task.dueDate ? `<span class="${dDayClasses}">${statusText}</span>` : ''}
+
+                        <div class="flex items-center space-x-1.5">
+                            ${task.memo ? `
+                            <button
+                                onclick="window.openMemoModal('${task.id}')"
+                                class="text-indigo-500 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-full p-1 window-no-drag"
+                                aria-label="메모 보기"
+                                title="메모 보기"
+                            >
+                                ${createIcon('Info', 'w-4 h-4')}
+                            </button>
+                            ` : ''}
+
+                            <!-- 삭제/완료 버튼 (관리자 모드에 따라 동작 변경) -->
+                            <button
+                                onclick="window.handleDeleteTask('${task.id}', ${isShared})"
+                                class="${deleteButtonClasses} transition duration-150 p-1 window-no-drag"
+                                aria-label="${deleteButtonTooltip}"
+                                title="${deleteButtonTooltip}"
+                            >
+                                ${createIcon('Trash2', 'w-4 h-4')}
+                            </button>
+                        </div>
+                    </div>
+                </li>
+            `;
+        };
+        
+        /**
+         * 업무 등록 모달 렌더링 (변경 없음)
+         */
+        const renderTaskRegistrationModal = () => {
+            if (!state.isTaskModalOpen) return;
+
+            const modalHtml = `
+                <div id="task-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">새 업무 등록</h2>
+                            <button id="task-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        
+                        <form id="task-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="taskText" class="block text-sm font-medium text-gray-700 mb-1">
+                                    업무 내용 <span class="text-red-500">*</span>
+                                </label>
+                                <input
+                                    id="taskText"
+                                    type="text"
+                                    placeholder="처리해야 할 업무 내용을 입력하세요"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                    required
+                                />
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="dueDate" class="block text-sm font-medium text-gray-700 mb-1">
+                                    마감일
+                                </label>
+                                <input
+                                    id="dueDate"
+                                    type="date"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                />
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="memoText" class="block text-sm font-medium text-gray-700 mb-1">
+                                    메모 (선택)
+                                </label>
+                                <textarea
+                                    id="memoText"
+                                    rows="3"
+                                    placeholder="업무에 대한 메모를 적어주세요. (선택)"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                ></textarea>
+                            </div>
+                            
+                            <div id="task-type-container" class="mb-6 p-3 rounded-lg border bg-indigo-50 border-indigo-300">
+                                <p class="text-xs font-semibold mb-2 text-gray-700">업무 유형 선택</p>
+                                
+                                <div class="flex items-center space-x-6 text-sm">
+                                    <!-- 공유 업무 선택 -->
+                                    <label class="flex items-center cursor-pointer">
+                                        <input type="radio" name="taskType" value="shared" checked 
+                                            class="form-radio text-indigo-600 focus:ring-indigo-500" />
+                                        ${createIcon('Share2', 'w-4 h-4 ml-1 mr-1 text-indigo-600')}
+                                        <span class="text-gray-800 font-bold">공유 업무</span>
+                                    </label>
+                                    
+                                    <!-- 개인 업무 선택 -->
+                                    <label class="flex items-center cursor-pointer">
+                                        <input type="radio" name="taskType" value="private" 
+                                            class="form-radio text-green-600 focus:ring-green-500" />
+                                        ${createIcon('User', 'w-4 h-4 ml-1 mr-1 text-green-600')}
+                                        <span class="text-gray-800 font-bold">개인 업무</span>
+                                    </label>
+                                </div>
+                                
+                                <div id="type-info-message" class="mt-3 flex items-center p-2 bg-indigo-100 rounded text-xs text-indigo-800 font-medium">
+                                    ${createIcon('Info', 'w-4 h-4 mr-2 flex-shrink-0')}
+                                    <span>업무 유형을 선택하세요.</span>
+                                </div>
+                            </div>
+
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="task-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="task-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    ${createIcon('PlusCircle', 'w-4 h-4 mr-2 inline-block')}
+                                    <span id="submit-text">공유 업무 등록</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+            
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            document.getElementById('task-modal-close-btn').onclick = () => setState({ isTaskModalOpen: false, statusMessage: '' }); 
+            document.getElementById('task-modal-cancel-btn').onclick = () => setState({ isTaskModalOpen: false, statusMessage: '' }); 
+
+            const form = document.getElementById('task-form');
+            const typeContainer = document.getElementById('task-type-container');
+            const submitButton = document.getElementById('task-modal-submit-btn');
+            const submitText = document.getElementById('submit-text');
+            const infoMessage = document.getElementById('type-info-message');
+            const taskTypeRadios = form.querySelectorAll('input[name="taskType"]');
+            
+            const updateModalStyle = (isShared) => {
+                const typeClasses = isShared 
+                    ? 'bg-indigo-50 border-indigo-300' 
+                    : 'bg-green-50 border-green-300';
+                const submitClasses = isShared 
+                    ? 'bg-indigo-500 hover:bg-indigo-700' 
+                    : 'bg-green-500 hover:bg-green-700';
+                const infoClasses = isShared 
+                    ? 'bg-indigo-100 text-indigo-800' 
+                    : 'bg-green-100 text-green-800';
+                const infoText = isShared 
+                    ? `경고: 이 업무는 팀의 모든 사용자에게 실시간으로 공유되며, 작성자는 '${state.nickname || '미설정'}'입니다.` 
+                    : '알림: 이 업무는 본인만 확인할 수 있는 개인 스케줄입니다.';
+                const buttonText = isShared 
+                    ? '공유 업무 등록' 
+                    : '개인 업무 등록';
+
+                typeContainer.className = `mb-6 p-3 rounded-lg border transition duration-300 ease-in-out ${typeClasses}`;
+                submitButton.className = `px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 ${submitClasses}`;
+                submitText.textContent = buttonText;
+                infoMessage.className = `mt-3 flex items-center p-2 rounded text-xs font-medium ${infoClasses}`;
+                infoMessage.innerHTML = `${createIcon('Info', 'w-4 h-4 mr-2 flex-shrink-0')}<span>${infoText}</span>`;
+            };
+
+            taskTypeRadios.forEach(radio => {
+                radio.onchange = (e) => {
+                    const isShared = e.target.value === 'shared';
+                    updateModalStyle(isShared);
+                };
+            });
+            updateModalStyle(true); // 초기 설정
+
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                const taskText = document.getElementById('taskText').value; // ?? 수정된 부분
+                const dueDate = document.getElementById('dueDate').value;
+                const memoText = document.getElementById('memoText').value;
+                const isShared = form.querySelector('input[name="taskType"]:checked').value === 'shared';
+                
+                submitButton.disabled = true;
+                submitText.textContent = '등록 중...';
+
+                const success = await handleAddTask(taskText, dueDate, isShared, memoText); // 메모 포함 등록
+
+                if (!success) {
+                    submitButton.disabled = false;
+                    updateModalStyle(isShared); // 텍스트 복구
+                }
+            };
+        };
+        
+        /**
+         * 닉네임 설정 모달 렌더링
+         */
+        const renderNicknameModal = () => {
+            if (!state.isNicknameModalOpen) return;
+
+            const modalHtml = `
+                <div id="nickname-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">내 닉네임 설정</h2>
+                            <button id="nickname-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="nickname-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="nickname-input" class="block text-sm font-medium text-gray-700 mb-1">
+                                    사용할 닉네임 (2~15자)
+                                </label>
+                                <input
+                                    type="text"
+                                    id="nickname-input"
+                                    placeholder="공유 업무에 표시될 닉네임을 입력하세요"
+                                    value="${state.nickname || ''}"
+                                    maxlength="15"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                    required
+                                />
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="nickname-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="nickname-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    저장
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => setState({ isNicknameModalOpen: false, statusMessage: '' });
+            document.getElementById('nickname-modal-close-btn').onclick = closeHandler;
+            document.getElementById('nickname-modal-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('nickname-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const nicknameInput = document.getElementById('nickname-input');
+                const submitButton = document.getElementById('nickname-modal-submit-btn');
+                
+                submitButton.disabled = true;
+                submitButton.textContent = '저장 중...';
+
+                const success = await window.handleSetNickname(nicknameInput.value);
+                
+                if (!success) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = '저장';
+                }
+            };
+        };
+
+        /**
+         * ?? [추가] 관리자 비밀번호 입력 모달 렌더링
+         */
+        const renderAdminModal = () => {
+            if (!state.isAdminModalOpen) return;
+
+            const modalHtml = `
+                <div id="admin-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-red-700">관리자 모드 활성화</h2>
+                            <button id="admin-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="admin-form" class="p-4">
+                            <div class="mb-4">
+                                <label for="admin-password" class="block text-sm font-medium text-gray-700 mb-1">
+                                    관리자 비밀번호를 입력하세요 (9594)
+                                </label>
+                                <input
+                                    type="password"
+                                    id="admin-password"
+                                    placeholder="비밀번호"
+                                    class="w-full p-2 border border-gray-300 rounded-lg focus:ring-red-500 focus:border-red-500 text-sm"
+                                    required
+                                />
+                            </div>
+                            <div class="flex justify-end space-x-3">
+                                <button
+                                    type="button"
+                                    id="admin-modal-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    id="admin-modal-submit-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 transform hover:scale-105 bg-red-500 hover:bg-red-700"
+                                >
+                                    활성화
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeHandler = () => setState({ isAdminModalOpen: false, statusMessage: '' });
+            document.getElementById('admin-modal-close-btn').onclick = closeHandler;
+            document.getElementById('admin-modal-cancel-btn').onclick = closeHandler;
+
+            document.getElementById('admin-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const password = document.getElementById('admin-password').value;
+                window.toggleAdminMode(password);
+            };
+        };
+
+        /**
+         * 메모 보기 모달 렌더링
+         */
+        const renderMemoModal = () => {
+            if (!state.isMemoModalOpen) return;
+
+            const modalHtml = `
+                <div id="memo-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-md transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">메모</h2>
+                            <button id="memo-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <div class="p-4 space-y-3">
+                            <div class="text-sm text-gray-500">업무: <span class="font-semibold text-gray-800">${state.memoModalTitle || ''}</span></div>
+                            <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-800 whitespace-pre-line break-words">
+                                ${state.memoModalContent || '메모 내용이 없습니다.'}
+                            </div>
+                        </div>
+                        <div class="flex justify-end p-4 pt-0">
+                            <button id="memo-modal-close-btn-bottom" class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700">
+                                닫기
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            document.getElementById('memo-modal-close-btn').onclick = closeMemoModal;
+            document.getElementById('memo-modal-close-btn-bottom').onclick = closeMemoModal;
+        };
+
+
+        const renderApp = () => {
+            const appContainer = document.getElementById('app-container');
+            if (!appContainer) return;
+            
+            const existingTaskModal = document.getElementById('task-modal');
+            if (existingTaskModal) {
+                existingTaskModal.parentNode.removeChild(existingTaskModal);
+            }
+            const existingNicknameModal = document.getElementById('nickname-modal');
+            if (existingNicknameModal) {
+                existingNicknameModal.parentNode.removeChild(existingNicknameModal);
+            }
+            const existingAdminModal = document.getElementById('admin-modal');
+            if (existingAdminModal) {
+                existingAdminModal.parentNode.removeChild(existingAdminModal);
+            }
+            const existingMemoModal = document.getElementById('memo-modal');
+            if (existingMemoModal) {
+                existingMemoModal.parentNode.removeChild(existingMemoModal);
+            }
+
+
+            // 로딩 화면
+            if (state.loading) {
+                appContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-[50vh] bg-gray-50 p-8">
+                        ${createIcon('Loader', 'w-8 h-8 text-indigo-500 animate-spin mr-2')}
+                        <p class="text-gray-600 mt-3">인증 및 데이터를 불러오는 중...</p>
+                        <p class="text-xs text-gray-400 mt-1">현재 서버 ID: ${appId}</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Firebase 오류 화면
+            if (state.isFirebaseError) {
+                appContainer.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-[50vh] bg-red-50 p-8 rounded-xl border border-red-200">
+                        ${createIcon('AlertTriangle', 'w-12 h-12 text-red-500')}
+                        <h2 class="text-xl font-bold text-red-700 mt-4">앱 초기화 오류</h2>
+                        <p class="text-gray-600 mt-2 text-center">
+                            Firebase 설정에 문제가 있어 앱을 실행할 수 없습니다. 
+                            <br />
+                            콘솔(Console)에 출력된 오류 메시지를 확인해 주세요.
+                        </p>
+                        <div class="mt-4 p-2 bg-red-100 rounded text-sm text-red-600">
+                            <p>상태: ${state.statusMessage}</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+            
+            // [수정] 업무 목록 필터링 (미완료, 완료, 개인 업무 분리)
+            let filteredTasks = [];
+            
+            // 공유 업무에 개인 완료 상태를 합침
+            const combinedSharedTasks = state.tasks.map(task => {
+                const isResolved = state.resolutionMap.get(task.id) || false;
+                // 공유 업무는 개인별 완료 상태를 resolutionMap과 합산
+                return { ...task, completed: isResolved, isShared: true };
+            });
+            const combinedPrivateTasks = state.privateTasks.map(task => ({
+                ...task,
+                isShared: false,
+                completed: task.completed || false,
+            }));
+            const allTasks = [...combinedSharedTasks, ...combinedPrivateTasks];
+
+            // 필터링 로직
+            switch (state.currentView) {
+                case 'unresolved':
+                    // 미완료 업무만 필터링
+                    filteredTasks = allTasks.filter(task => !task.completed);
+                    break;
+                case 'resolved':
+                    // 완료된 업무만 필터링
+                    filteredTasks = allTasks.filter(task => task.completed);
+                    break;
+                case 'all':
+                default:
+                    // 모든 업무
+                    filteredTasks = allTasks;
+                    break;
+            }
+            
+            // 정렬 로직 (기존 유지: 미완료 우선, 마감일 순)
+            filteredTasks.sort((a, b) => {
+                if (a.completed !== b.completed) {
+                    return a.completed ? 1 : -1;
+                }
+                const dateA = a.dueDate ? new Date(a.dueDate) : new Date('9999-12-31');
+                const dateB = b.dueDate ? new Date(b.dueDate) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+
+            const taskListHtml = filteredTasks.length === 0 
+                ? `
+                    <div class="text-center py-8 text-gray-500 bg-gray-50 rounded-lg mx-2">
+                        ${createIcon('Send', 'w-6 h-6 mx-auto mb-2 text-indigo-400')}
+                        <p class="font-medium">이 목록에 등록된 업무가 없습니다.</p>
+                        <p class="text-sm mt-1">상단의 '+ 업무 등록' 버튼을 눌러 새 업무를 추가하거나 뷰를 변경해보세요.</p>
+                    </div>
+                `
+                : `<ul class="space-y-3">${filteredTasks.map(renderTaskItem).join('')}</ul>`;
+                
+            // 현재 뷰 제목 설정
+            let viewTitle = '';
+            switch (state.currentView) {
+                case 'unresolved': viewTitle = `미완료 업무 (${filteredTasks.length}건)`; break;
+                case 'resolved': viewTitle = `완료된 업무 (${filteredTasks.length}건)`; break;
+                case 'all': viewTitle = `전체 통합 업무 (${filteredTasks.length}건)`; break;
+            }
+
+
+            // 메인 앱 템플릿
+            const appHtml = `
+                <div class="w-full bg-white shadow-2xl rounded-xl overflow-hidden transform transition duration-500 border border-gray-100">
+                    
+                    <!-- 헤더 및 사용자 정보 -->
+                    <div class="p-4 bg-indigo-600 text-white shadow-md window-drag-area relative">
+                        <!-- ?? 명확한 드래그 영역 힌트 -->
+                        <div class="drag-hint"></div> 
+                        <div class="flex items-center justify-between mb-2">
+                            <h1 class="text-2xl font-bold flex items-center window-no-drag">
+                                ${createIcon('Share2', 'w-6 h-6 mr-2')}
+                                업무 공유 플랫폼
+                            </h1>
+                            
+                            <!-- 버튼 그룹 -->
+                            <div class="flex space-x-2 window-no-drag">
+                                <button
+                                    id="open-task-modal-btn"
+                                    class="flex items-center text-sm font-semibold px-3 py-1 bg-indigo-500 hover:bg-indigo-700 rounded-lg shadow transition duration-150"
+                                    title="새 업무 등록"
+                                >
+                                    ${createIcon('PlusCircle', 'w-4 h-4 mr-1')}
+                                    업무 등록
+                                </button>
+                                <button
+                                    id="open-nickname-modal-btn"
+                                    class="flex items-center text-sm font-semibold px-3 py-1 bg-gray-700 hover:bg-gray-900 rounded-lg shadow transition duration-150"
+                                    title="내 닉네임 설정"
+                                >
+                                    ${createIcon('User', 'w-4 h-4 mr-1')}
+                                    닉네임 설정
+                                </button>
+                                <!-- ?? [추가] 관리자 모드 토글 버튼 (아이콘 사용) -->
+                                <button
+                                    id="admin-toggle-btn"
+                                    onclick="${state.isAdmin ? 'toggleAdminMode()' : 'setState({ isAdminModalOpen: true })'}"
+                                    class="flex items-center text-sm font-semibold px-2 py-1 rounded-lg shadow transition duration-150 ${state.isAdmin ? 'bg-red-500 hover:bg-red-700 text-white' : 'bg-gray-300 hover:bg-gray-400 text-gray-800'}"
+                                    title="${state.isAdmin ? '관리자 모드 해제' : '관리자 모드 활성화 (9594)'}"
+                                >
+                                    ${createIcon('Settings', 'w-4 h-4')}
+                                </button>
+                            </div>
+                        </div>
+
+                        <p class="text-sm mt-1 opacity-90 truncate window-no-drag">
+                            닉네임: <span class="font-bold bg-indigo-700 px-1 py-0.5 rounded text-sm">${state.nickname || '미설정 (필수 아님)'}</span> 
+                            | ID: <span class="font-mono text-xs">${state.userId ? state.userId.substring(0, 8) + '...' : '로그인 중...'}</span>
+                        </p>
+                        <p class="text-xs font-mono text-gray-200 mt-1 window-no-drag">
+                            현재 서버 ID: ${appId}
+                        </p>
+                    </div>
+                    
+                    <!-- 업무 목록 뷰 선택 탭 -->
+                    <div class="p-3 bg-gray-100 border-b border-gray-200 window-no-drag">
+                        <div class="flex justify-center space-x-2 text-xs font-semibold">
+                            <button onclick="changeView('unresolved')" class="px-3 py-1 rounded-full transition ${state.currentView === 'unresolved' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                미완료 업무
+                            </button>
+                            <button onclick="changeView('resolved')" class="px-3 py-1 rounded-full transition ${state.currentView === 'resolved' ? 'bg-green-600 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                완료된 업무
+                            </button>
+                            <button onclick="changeView('all')" class="px-3 py-1 rounded-full transition ${state.currentView === 'all' ? 'bg-gray-700 text-white shadow-md' : 'text-gray-700 hover:bg-gray-200'} window-no-drag">
+                                전체 보기
+                            </button>
+                        </div>
+                        <h2 class="text-center text-sm font-bold text-gray-700 mt-2">
+                           ${viewTitle}
+                        </h2>
+                    </div>
+
+                    <!-- 통합 업무 목록 -->
+                    <div class="p-4 task-list overflow-y-auto hide-scrollbar">
+                        ${taskListHtml}
+                    </div>
+                    
+                    <!-- 하단 상태 메시지 -->
+                    ${state.statusMessage ? `
+                        <div class="p-3 bg-yellow-100 text-yellow-800 text-xs font-medium border-t border-yellow-200">
+                            상태: ${state.statusMessage}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+
+            appContainer.innerHTML = appHtml;
+
+            // 모달 열기 버튼 이벤트 리스너 재설정
+            document.getElementById('open-task-modal-btn').onclick = () => setState({ isTaskModalOpen: true, isNicknameModalOpen: false, statusMessage: '' });
+            document.getElementById('open-nickname-modal-btn').onclick = () => setState({ isNicknameModalOpen: true, isTaskModalOpen: false, statusMessage: '' });
+
+            // 모달 렌더링 (state.isTaskModalOpen, isNicknameModalOpen, isAdminModalOpen이 true일 경우)
+            if (state.isTaskModalOpen) {
+                renderTaskRegistrationModal();
+            } else if (state.isNicknameModalOpen) {
+                renderNicknameModal();
+            } else if (state.isAdminModalOpen) {
+                 renderAdminModal(); // ?? [추가] 관리자 모달 렌더링
+            }
+
+            if (state.isMemoModalOpen) {
+                renderMemoModal();
+            }
+        };
+
+        // ====================================================================
+        // 7. 초기 실행
+        // ====================================================================
+        
+        // 애플리케이션 시작
+        window.onload = initializeFirebase;
+    </script>
+</body>
+</html>

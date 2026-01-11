@@ -1,0 +1,41 @@
+{
+  "name": "task-sharing-platform",
+  "version": "1.0.0",
+  "description": "Electron-based shared/private task board",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "web": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path docs) { Remove-Item -Recurse -Force docs }; New-Item -ItemType Directory -Path docs | Out-Null; Copy-Item index.html docs\\\\index.html\""
+  },
+  "keywords": [
+    "electron",
+    "firebase",
+    "task"
+  ],
+  "author": "Your Name",
+  "license": "ISC",
+  "dependencies": {
+    "fs-extra": "^10.1.0"
+  },
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.yourcompany.taskplatform",
+    "productName": "업무 공유 플랫폼",
+    "files": [
+      "main.js",
+      "index.html",
+      "server_editor.html",
+      "preload.js"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
