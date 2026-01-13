@@ -2176,7 +2176,7 @@
                 const app = initializeApp(firebaseConfig);
                 const db = getFirestore(app);
                 const auth = getAuth(app);
-                teamListDocRef = doc(db, 'artifacts/global/public/data/team_list');
+                teamListDocRef = doc(db, 'artifacts/global/public/team_list');
                 
                 setState({ app, db, auth });
 
