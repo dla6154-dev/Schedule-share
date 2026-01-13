@@ -106,6 +106,36 @@
 
         let appId = null; 
         
+        let serverLabelMap = new Map();
+        let serverSettingsMap = new Map();
+
+        const updateServerLabelMap = (teams) => {
+            serverLabelMap = new Map((teams || []).map(team => [team.appId, team.label]));
+            serverSettingsMap = new Map((teams || []).map(team => [team.appId, {
+                label: team.label,
+                allowNoPassword: Boolean(team.allowNoPassword)
+            }]));
+        };
+
+        const getServerLabel = (targetAppId) => {
+            if (!targetAppId) return '';
+            return serverLabelMap.get(targetAppId) || targetAppId;
+        };
+
+        const getServerAllowNoPassword = (targetAppId) => {
+            if (!targetAppId) return true;
+            const settings = serverSettingsMap.get(targetAppId);
+            return settings ? Boolean(settings.allowNoPassword) : true;
+        };
+
+        if (ipcRenderer && ipcRenderer.invoke) {
+            ipcRenderer.invoke('get-team-list').then((teams) => {
+                updateServerLabelMap(teams);
+            }).catch(() => {
+                console.warn('Failed to load team list for server labels.');
+            });
+        }
+        
         const FIREBASE_CONFIG = {
             apiKey: "AIzaSyCkxPbMl7dqDEC_6XuN6w3IY5WjwGU8xOw",
             authDomain: "schedule-62efa.firebaseapp.com",
@@ -118,7 +148,14 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        const APP_VERSION = "1.4.1";
+        let APP_VERSION = "1.4.1";
+        if (ipcRenderer) {
+            try {
+                APP_VERSION = ipcRenderer.sendSync('get-app-version');
+            } catch (e) {
+                console.warn('Failed to read app version from main process.');
+            }
+        }
 
         // 전역 상태
         let state = {
@@ -151,6 +188,20 @@
             isAdmin: false, // ?? [추가] 관리자 모드 상태
             isAdminModalOpen: false, // ?? [추가] 관리자 비밀번호 모달 상태
             isMemoModalOpen: false,
+            isUpdateModalOpen: false,
+            updateProgressPercent: 0,
+            updateProgressText: '',
+            isServerSwitchModalOpen: false,
+            serverSwitchTargetAppId: null,
+            serverSwitchTargetLabel: '',
+            serverSwitchPassword: '',
+            serverSwitchError: '',
+            isServerPasswordModalOpen: false,
+            serverPasswordCurrent: '',
+            serverPasswordNew: '',
+            serverPasswordConfirm: '',
+            serverPasswordAllowNoPassword: true,
+            serverPasswordError: '',
             memoModalContent: '',
             memoModalTitle: '',
             // 관리자 메모 수정용 상태
@@ -631,6 +682,18 @@
             const date = createdAt?.toDate ? createdAt.toDate() : createdAt instanceof Date ? createdAt : null;
             if (!date) return '날짜 없음';
             return `${date.getFullYear()}. ${String(date.getMonth() + 1).padStart(2, '0')}. ${String(date.getDate()).padStart(2, '0')}.`;
+        };
+
+        const formatBytes = (bytes) => {
+            if (!bytes || bytes < 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex += 1;
+            }
+            return `${size.toFixed(size < 10 && unitIndex > 0 ? 1 : 0)} ${units[unitIndex]}`;
         };
 
 
@@ -2153,6 +2216,45 @@
                     switchServer(newAppId);
                 }
             });
+
+            ipcRenderer.on('request-server-switch', (_event, data) => {
+                setState({
+                    isServerSwitchModalOpen: true,
+                    serverSwitchTargetAppId: data?.appId || null,
+                    serverSwitchTargetLabel: data?.label || '',
+                    serverSwitchPassword: '',
+                    serverSwitchError: ''
+                });
+            });
+
+            ipcRenderer.on('update-download-start', () => {
+                setState({
+                    isUpdateModalOpen: true,
+                    updateProgressPercent: 0,
+                    updateProgressText: '다운로드를 시작합니다...'
+                });
+            });
+
+            ipcRenderer.on('update-download-progress', (_event, progress) => {
+                const percent = Math.max(0, Math.min(100, Math.round(progress?.percent || 0)));
+                const transferred = formatBytes(progress?.transferred || 0);
+                const total = formatBytes(progress?.total || 0);
+                const speed = progress?.bytesPerSecond ? `${formatBytes(progress.bytesPerSecond)}/s` : '';
+                const detail = speed ? `${transferred} / ${total} · ${speed}` : `${transferred} / ${total}`;
+                setState({
+                    isUpdateModalOpen: true,
+                    updateProgressPercent: percent,
+                    updateProgressText: detail
+                });
+            });
+
+            ipcRenderer.on('update-download-complete', () => {
+                setState({
+                    isUpdateModalOpen: true,
+                    updateProgressPercent: 100,
+                    updateProgressText: '다운로드 완료'
+                });
+            });
         }
         
 
@@ -2306,6 +2408,315 @@
         /**
          * 업무 등록 모달 렌더링 (변경 없음)
          */
+        const renderUpdateModal = () => {
+            if (!state.isUpdateModalOpen) return;
+
+            const percent = Math.max(0, Math.min(100, Math.round(state.updateProgressPercent || 0)));
+            const modalHtml = `
+                <div id="update-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">업데이트 다운로드 중</h2>
+                            <button id="update-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <div class="p-4">
+                            <div class="w-full bg-gray-200 rounded-full h-2 mb-3 overflow-hidden">
+                                <div class="bg-indigo-500 h-2 transition-all duration-300" style="width: ${percent}%"></div>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-gray-600 mb-2">
+                                <span>${percent}%</span>
+                                <span>${state.updateProgressText || ''}</span>
+                            </div>
+                            <p class="text-xs text-gray-500">다운로드가 완료되면 재시작 안내가 표시됩니다.</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeBtn = document.getElementById('update-modal-close-btn');
+            if (closeBtn) {
+                closeBtn.onclick = () => setState({ isUpdateModalOpen: false });
+            }
+        };
+
+        const renderServerSwitchModal = () => {
+            if (!state.isServerSwitchModalOpen) return;
+
+            const targetLabel = state.serverSwitchTargetLabel || state.serverSwitchTargetAppId || '';
+            const errorText = state.serverSwitchError || '';
+            const modalHtml = `
+                <div id="server-switch-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">서버 전환 비밀번호</h2>
+                            <button id="server-switch-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="server-switch-form" class="p-4">
+                            <p class="text-sm text-gray-600 mb-3">
+                                전환 대상: <span class="font-semibold text-indigo-700">${targetLabel}</span>
+                            </p>
+                            <label for="server-switch-password" class="block text-sm font-medium text-gray-700 mb-1">비밀번호</label>
+                            <input
+                                id="server-switch-password"
+                                type="password"
+                                class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                placeholder="비밀번호를 입력하세요"
+                                required
+                            />
+                            ${errorText ? `<p class="text-xs text-red-600 mt-2">${errorText}</p>` : ''}
+                            <div class="mt-4 flex justify-end space-x-2">
+                                <button
+                                    type="button"
+                                    id="server-switch-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    확인
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeModal = () => {
+                setState({
+                    isServerSwitchModalOpen: false,
+                    serverSwitchError: '',
+                    serverSwitchPassword: ''
+                });
+            };
+
+            const closeBtn = document.getElementById('server-switch-close-btn');
+            const cancelBtn = document.getElementById('server-switch-cancel-btn');
+            if (closeBtn) closeBtn.onclick = closeModal;
+            if (cancelBtn) cancelBtn.onclick = closeModal;
+
+            const form = document.getElementById('server-switch-form');
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                if (!ipcRenderer || !ipcRenderer.invoke) {
+                    setState({ serverSwitchError: 'IPC를 사용할 수 없습니다.' });
+                    return;
+                }
+                const passwordInput = document.getElementById('server-switch-password');
+                const password = passwordInput ? passwordInput.value : '';
+                const result = await ipcRenderer.invoke('confirm-server-switch', {
+                    appId: state.serverSwitchTargetAppId,
+                    password
+                });
+                if (result && result.ok) {
+                    closeModal();
+                } else {
+                    setState({ serverSwitchError: result?.error || '비밀번호가 일치하지 않습니다.' });
+                }
+            };
+        };
+
+        const renderServerPasswordModal = () => {
+            if (!state.isServerPasswordModalOpen) return;
+
+            const serverLabel = getServerLabel(appId);
+            const errorText = state.serverPasswordError || '';
+            const modalHtml = `
+                <div id="server-password-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
+                    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
+                        <div class="flex justify-between items-center p-4 border-b border-gray-200">
+                            <h2 class="text-lg font-bold text-indigo-700">서버 비밀번호 설정</h2>
+                            <button id="server-password-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
+                                ${createIcon('X', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <form id="server-password-form" class="p-4">
+                            <p class="text-sm text-gray-600 mb-3">
+                                대상 서버: <span class="font-semibold text-indigo-700">${serverLabel}</span>
+                            </p>
+                            <label for="server-password-current" class="block text-sm font-medium text-gray-700 mb-1">현재 비밀번호</label>
+                            <input
+                                id="server-password-current"
+                                type="password"
+                                class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm mb-3 disabled:bg-gray-100 disabled:text-gray-400"
+                                placeholder="현재 비밀번호를 입력하세요"
+                            />
+                            <label for="server-password-new" class="block text-sm font-medium text-gray-700 mb-1">새 비밀번호</label>
+                            <input
+                                id="server-password-new"
+                                type="password"
+                                class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm mb-3 disabled:bg-gray-100 disabled:text-gray-400"
+                                placeholder="새 비밀번호를 입력하세요"
+                                ${state.serverPasswordAllowNoPassword ? 'disabled' : ''}
+                            />
+                            <label for="server-password-confirm" class="block text-sm font-medium text-gray-700 mb-1">새 비밀번호 확인</label>
+                            <input
+                                id="server-password-confirm"
+                                type="password"
+                                class="w-full p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                                placeholder="새 비밀번호를 다시 입력하세요"
+                                ${state.serverPasswordAllowNoPassword ? 'disabled' : ''}
+                            />
+                            <p class="text-xs text-gray-500 mt-2">초기 설정 시 현재 비밀번호는 비워두세요.</p>
+                            <div class="mt-3 flex items-center space-x-2">
+                                <input
+                                    id="server-password-allow-no"
+                                    type="checkbox"
+                                    class="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                                    ${state.serverPasswordAllowNoPassword ? 'checked' : ''}
+                                />
+                                <label for="server-password-allow-no" class="text-xs font-medium text-gray-700">
+                                    비밀번호 없이 출입 허용
+                                </label>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">체크하면 이 서버는 비밀번호 없이 접근할 수 있습니다.</p>
+                            ${errorText ? `<p class="text-xs text-red-600 mt-2">${errorText}</p>` : ''}
+                            <div class="mt-4 flex justify-end space-x-2">
+                                <button
+                                    type="button"
+                                    id="server-password-cancel-btn"
+                                    class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                >
+                                    취소
+                                </button>
+                                <button
+                                    type="submit"
+                                    class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700"
+                                >
+                                    저장
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.innerHTML = modalHtml;
+            document.body.appendChild(container);
+
+            const closeModal = () => {
+                setState({
+                    isServerPasswordModalOpen: false,
+                    serverPasswordError: '',
+                    serverPasswordCurrent: '',
+                    serverPasswordNew: '',
+                    serverPasswordConfirm: ''
+                });
+            };
+
+            const closeBtn = document.getElementById('server-password-close-btn');
+            const cancelBtn = document.getElementById('server-password-cancel-btn');
+            if (closeBtn) closeBtn.onclick = closeModal;
+            if (cancelBtn) cancelBtn.onclick = closeModal;
+
+            const form = document.getElementById('server-password-form');
+            const allowToggle = document.getElementById('server-password-allow-no');
+            const currentInput = document.getElementById('server-password-current');
+            const newInput = document.getElementById('server-password-new');
+            const confirmInput = document.getElementById('server-password-confirm');
+
+            const syncPasswordInputs = (allowNoPassword) => {
+                // Current password stays enabled for verification.
+                if (newInput) newInput.disabled = allowNoPassword;
+                if (confirmInput) confirmInput.disabled = allowNoPassword;
+            };
+
+            if (allowToggle) {
+                allowToggle.onchange = (event) => {
+                    const checked = Boolean(event?.target?.checked);
+                    setState({ serverPasswordAllowNoPassword: checked });
+                    syncPasswordInputs(checked);
+                };
+            }
+
+            syncPasswordInputs(Boolean(state.serverPasswordAllowNoPassword));
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                if (!ipcRenderer || !ipcRenderer.invoke) {
+                    setState({ serverPasswordError: 'IPC를 사용할 수 없습니다.' });
+                    return;
+                }
+                const allowInput = document.getElementById('server-password-allow-no');
+                const allowNoPassword = allowInput ? allowInput.checked : false;
+                const currentPassword = currentInput ? currentInput.value : '';
+                const newPassword = newInput ? newInput.value : '';
+                const confirmPassword = confirmInput ? confirmInput.value : '';
+                if (allowNoPassword) {
+                    const result = await ipcRenderer.invoke('update-server-password', {
+                        appId,
+                        currentPassword,
+                        newPassword: '',
+                        allowNoPassword: true
+                    });
+                    if (result && result.ok) {
+                        serverSettingsMap.set(appId, {
+                            label: getServerLabel(appId),
+                            allowNoPassword: true
+                        });
+                        setState({
+                            isServerPasswordModalOpen: false,
+                            serverPasswordError: '',
+                            serverPasswordCurrent: '',
+                            serverPasswordNew: '',
+                            serverPasswordConfirm: '',
+                            serverPasswordAllowNoPassword: true,
+                            statusMessage: '서버 비밀번호가 해제되었습니다.'
+                        });
+                    } else {
+                        setState({ serverPasswordError: result?.error || '비밀번호 변경에 실패했습니다.' });
+                    }
+                    return;
+                }
+
+                if (!newPassword) {
+                    setState({ serverPasswordError: '새 비밀번호를 입력해주세요.' });
+                    return;
+                }
+                if (newPassword !== confirmPassword) {
+                    setState({ serverPasswordError: '새 비밀번호가 일치하지 않습니다.' });
+                    return;
+                }
+                const result = await ipcRenderer.invoke('update-server-password', {
+                    appId,
+                    currentPassword,
+                    newPassword,
+                    allowNoPassword: false
+                });
+                if (result && result.ok) {
+                    serverSettingsMap.set(appId, {
+                        label: getServerLabel(appId),
+                        allowNoPassword: false
+                    });
+                    setState({
+                        isServerPasswordModalOpen: false,
+                        serverPasswordError: '',
+                        serverPasswordCurrent: '',
+                        serverPasswordNew: '',
+                        serverPasswordConfirm: '',
+                        serverPasswordAllowNoPassword: false,
+                        statusMessage: '서버 비밀번호가 변경되었습니다.'
+                    });
+                } else {
+                    setState({ serverPasswordError: result?.error || '비밀번호 변경에 실패했습니다.' });
+                }
+            };
+        };
+
         const renderTaskRegistrationModal = () => {
             if (!state.isTaskModalOpen) return;
 
@@ -3263,6 +3674,18 @@
             if (existingTableModal) {
                 existingTableModal.parentNode.removeChild(existingTableModal);
             }
+            const existingUpdateModal = document.getElementById('update-modal');
+            if (existingUpdateModal) {
+                existingUpdateModal.parentNode.removeChild(existingUpdateModal);
+            }
+            const existingServerSwitchModal = document.getElementById('server-switch-modal');
+            if (existingServerSwitchModal) {
+                existingServerSwitchModal.parentNode.removeChild(existingServerSwitchModal);
+            }
+            const existingServerPasswordModal = document.getElementById('server-password-modal');
+            if (existingServerPasswordModal) {
+                existingServerPasswordModal.parentNode.removeChild(existingServerPasswordModal);
+            }
 
 
             // 로딩 화면
@@ -3271,7 +3694,7 @@
                     <div class="flex flex-col items-center justify-center min-h-[50vh] bg-gray-50 p-8">
                         ${createIcon('Loader', 'w-8 h-8 text-indigo-500 animate-spin mr-2')}
                         <p class="text-gray-600 mt-3">인증 및 데이터를 불러오는 중...</p>
-                        <p class="text-xs text-gray-400 mt-1">현재 서버 ID: ${appId}</p>
+                        <p class="text-xs text-gray-400 mt-1">현재 서버: ${getServerLabel(appId)}</p>
                     </div>
                 `;
                 return;
@@ -3401,14 +3824,26 @@
                                         ${hasUnreadNotices ? `<span class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white"></span>` : ''}
                                     </button>
                                 </div>
-                                <button
-                                    id="open-nickname-modal-btn"
-                                    class="flex items-center text-sm font-semibold px-3 py-1 bg-gray-700 hover:bg-gray-900 rounded-lg shadow transition duration-150"
-                                    title="내 닉네임 설정"
-                                >
-                                    ${createIcon('User', 'w-4 h-4 mr-1')}
-                                    닉네임 설정
-                                </button>
+                                <div class="flex flex-col space-y-1">
+                                    <button
+                                        id="open-nickname-modal-btn"
+                                        class="flex items-center text-sm font-semibold px-3 py-1 bg-gray-700 hover:bg-gray-900 rounded-lg shadow transition duration-150"
+                                        title="내 닉네임 설정"
+                                    >
+                                        ${createIcon('User', 'w-4 h-4 mr-1')}
+                                        닉네임 설정
+                                    </button>
+                                    ${state.isAdmin ? `
+                                        <button
+                                            id="open-server-password-btn"
+                                            class="flex items-center justify-center text-xs font-semibold px-3 py-1 bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 rounded-lg shadow transition duration-150"
+                                            title="서버 비밀번호 설정"
+                                        >
+                                            ${createIcon('Lock', 'w-4 h-4 mr-1')}
+                                            서버 비밀번호 설정
+                                        </button>
+                                    ` : ''}
+                                </div>
                                 <!-- ?? [추가] 관리자 모드 토글 버튼 (아이콘 사용) -->
                                 <button
                                     id="admin-toggle-btn"
@@ -3426,7 +3861,7 @@
                             | ID: <span class="font-mono text-xs">${state.userId ? state.userId.substring(0, 8) + '...' : '로그인 중...'}</span>
                         </p>
                         <p class="text-xs font-mono text-gray-200 mt-1 window-no-drag">
-                            현재 서버 ID: ${appId}
+                            현재 서버: ${getServerLabel(appId)}
                         </p>
                         <div class="mt-2 flex justify-end window-no-drag">
                             <span class="text-xs font-semibold bg-indigo-500/60 text-white px-2 py-0.5 rounded-full">v${APP_VERSION}</span>
@@ -3476,6 +3911,29 @@
             document.getElementById('open-task-modal-btn').onclick = () => setState({ isTaskModalOpen: true, isNicknameModalOpen: false, statusMessage: '' });
             document.getElementById('open-nickname-modal-btn').onclick = () => setState({ isNicknameModalOpen: true, isTaskModalOpen: false, statusMessage: '' });
             document.getElementById('open-notice-modal-btn').onclick = () => setState({ isNoticeModalOpen: true, statusMessage: '' });
+            const serverPasswordBtn = document.getElementById('open-server-password-btn');
+            if (serverPasswordBtn) {
+                serverPasswordBtn.onclick = async () => {
+                    let allowNoPassword = false;
+                    if (ipcRenderer && ipcRenderer.invoke) {
+                        try {
+                            const teams = await ipcRenderer.invoke('get-team-list');
+                            updateServerLabelMap(teams);
+                            allowNoPassword = getServerAllowNoPassword(appId);
+                        } catch (e) {
+                            console.warn('Failed to refresh team list for password settings.');
+                        }
+                    }
+                    setState({
+                        isServerPasswordModalOpen: true,
+                        serverPasswordError: '',
+                        serverPasswordCurrent: '',
+                        serverPasswordNew: '',
+                        serverPasswordConfirm: '',
+                        serverPasswordAllowNoPassword: allowNoPassword
+                    });
+                };
+            }
 
             // 모달 렌더링 (state.isTaskModalOpen, isNicknameModalOpen, isAdminModalOpen이 true일 경우)
             if (state.isTaskModalOpen) {
@@ -3494,6 +3952,16 @@
                 renderMemoEditModal();
             } else if (state.isMemoModalOpen) {
                 renderMemoModal();
+            }
+
+            if (state.isUpdateModalOpen) {
+                renderUpdateModal();
+            }
+            if (state.isServerSwitchModalOpen) {
+                renderServerSwitchModal();
+            }
+            if (state.isServerPasswordModalOpen) {
+                renderServerPasswordModal();
             }
         };
 
