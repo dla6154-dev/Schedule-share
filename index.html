@@ -148,8 +148,8 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        \11.6.0\3
-        if (ipcRenderer) {
+        let APP_VERSION = "1.6.0";
+                if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
             } catch (e) {
