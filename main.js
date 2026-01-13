@@ -87,6 +87,15 @@ function getServerById(appId) {
     return TEAM_SERVERS.find(team => team.appId === appId) || null;
 }
 
+function broadcastTeamListUpdate(teams) {
+    const payload = Array.isArray(teams) ? teams : [];
+    BrowserWindow.getAllWindows().forEach((win) => {
+        if (!win.isDestroyed()) {
+            win.webContents.send('team-list-updated', payload);
+        }
+    });
+}
+
 function isServerPasswordSet(server) {
     return Boolean(server && server.passwordHash && server.passwordSalt);
 }
@@ -240,18 +249,33 @@ function setupIpcListeners() {
 
     ipcMain.on('save-team-list', async (event, newTeamList) => {
         try {
-            // 팀 목록 파일에 저장
-            await fs.writeJson(TEAM_LIST_PATH, newTeamList, { spaces: 2 });
-            
-            // 성공 메시지 전송 및 편집기 창 닫기
-            event.reply('save-success-close');
-            
-            // 앱 재시작 (새로운 설정으로 메뉴를 다시 구성하기 위해)
-            app.relaunch();
-            app.exit(0);
+            const normalized = Array.isArray(newTeamList)
+                ? newTeamList.map(normalizeTeamServer)
+                : [];
 
+            // ?? ?????? ???????????
+            await fs.writeJson(TEAM_LIST_PATH, normalized, { spaces: 2 });
+            TEAM_SERVERS = normalized;
+
+            if (!TEAM_SERVERS.some(team => team.appId === CURRENT_APP_ID)) {
+                const fallbackId = TEAM_SERVERS[0]?.appId || DEFAULT_APP_ID;
+                CURRENT_APP_ID = fallbackId;
+                saveServerId(fallbackId);
+                if (MAIN_WINDOW) {
+                    MAIN_WINDOW.webContents.send('set-server-id', fallbackId);
+                }
+            }
+
+            createApplicationMenu(CURRENT_APP_ID);
+            broadcastTeamListUpdate(TEAM_SERVERS);
+            if (MAIN_WINDOW) {
+                MAIN_WINDOW.webContents.send('publish-team-list', TEAM_SERVERS);
+            }
+
+            // ????? ????????? ????? ???????????????????
+            event.reply('save-success-close');
         } catch (e) {
-            console.error('팀 목록 저장 중 오류 발생:', e);
+            console.error('?? ?????? ???????????? ??????:', e);
         }
     });
     
@@ -281,7 +305,22 @@ function setupIpcListeners() {
         return updateServerPassword(appId, currentPassword, newPassword, allowNoPassword);
     });
 
-ipcMain.on('show-notification', (event, { title, body }) => {
+    ipcMain.handle('sync-team-list', async (_event, { teams }) => {
+        const normalized = Array.isArray(teams)
+            ? teams.map(normalizeTeamServer)
+            : [];
+        TEAM_SERVERS = normalized;
+        try {
+            await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
+        } catch (e) {
+            console.error('?? ?????? ???????????? ??????:', e);
+        }
+        createApplicationMenu(CURRENT_APP_ID);
+        broadcastTeamListUpdate(TEAM_SERVERS);
+        return { ok: true };
+    });
+
+    ipcMain.on('show-notification', (event, { title, body }) => {
         if (Notification.isSupported()) {
             new Notification({
                 title: title,

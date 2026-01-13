@@ -108,6 +108,27 @@
         
         let serverLabelMap = new Map();
         let serverSettingsMap = new Map();
+        let teamListDocRef = null;
+        let teamListUnsubscribe = null;
+        let pendingTeamListPublish = null;
+
+        const normalizeTeamList = (teams) => {
+            if (!Array.isArray(teams)) return [];
+            return teams
+                .filter((team) => team && typeof team.appId === 'string' && team.appId.trim() !== '')
+                .map((team) => {
+                    const appIdValue = String(team.appId).trim();
+                    const labelValue = String(team.label || appIdValue).trim();
+                    const hasPassword = Boolean(team.passwordHash && team.passwordSalt);
+                    return {
+                        label: labelValue,
+                        appId: appIdValue,
+                        passwordSalt: team.passwordSalt || '',
+                        passwordHash: team.passwordHash || '',
+                        allowNoPassword: hasPassword ? false : Boolean(team.allowNoPassword)
+                    };
+                });
+        };
 
         const updateServerLabelMap = (teams) => {
             serverLabelMap = new Map((teams || []).map(team => [team.appId, team.label]));
@@ -126,6 +147,34 @@
             if (!targetAppId) return true;
             const settings = serverSettingsMap.get(targetAppId);
             return settings ? Boolean(settings.allowNoPassword) : true;
+        };
+
+        const syncTeamListFromRemote = (teams) => {
+            const normalized = normalizeTeamList(teams);
+            if (!normalized.length) return;
+            updateServerLabelMap(normalized);
+            if (ipcRenderer && ipcRenderer.invoke) {
+                ipcRenderer.invoke('sync-team-list', { teams: normalized }).catch(() => {
+                    console.warn('Failed to sync team list with main process.');
+                });
+            }
+        };
+
+        const publishTeamListToRemote = async (teams) => {
+            const normalized = normalizeTeamList(teams);
+            if (!normalized.length) return;
+            pendingTeamListPublish = normalized;
+            if (!teamListDocRef || !state.db) return;
+            try {
+                await setDoc(teamListDocRef, {
+                    servers: normalized,
+                    updatedAt: serverTimestamp(),
+                    updatedBy: state.userId || null
+                }, { merge: true });
+                pendingTeamListPublish = null;
+            } catch (error) {
+                console.warn('Failed to publish team list:', error);
+            }
         };
 
         if (ipcRenderer && ipcRenderer.invoke) {
@@ -2101,6 +2150,19 @@
         // ====================================================================
         // Firebase 초기화 및 인증
         // ====================================================================
+        const setupTeamListSync = () => {
+            if (!teamListDocRef || teamListUnsubscribe || !state.db) return;
+            teamListUnsubscribe = onSnapshot(teamListDocRef, (snapshot) => {
+                if (!snapshot.exists()) return;
+                const data = snapshot.data();
+                if (data && Array.isArray(data.servers)) {
+                    syncTeamListFromRemote(data.servers);
+                }
+            }, (error) => {
+                console.warn('Failed to listen for team list updates:', error);
+            });
+        };
+
         const initializeFirebase = async () => {
             try {
                 if (!ipcRenderer && appId === null) {
@@ -2114,6 +2176,7 @@
                 const app = initializeApp(firebaseConfig);
                 const db = getFirestore(app);
                 const auth = getAuth(app);
+                teamListDocRef = doc(db, 'artifacts/global/public/data/team_list');
                 
                 setState({ app, db, auth });
 
@@ -2134,6 +2197,10 @@
                     if (userId && appId !== null) {
                         setupFirestoreListeners();
                         setupProfileListener(); 
+                        setupTeamListSync();
+                        if (pendingTeamListPublish) {
+                            publishTeamListToRemote(pendingTeamListPublish);
+                        }
                     }
                 });
                 
@@ -2215,6 +2282,14 @@
                 if (appId === null || appId !== newAppId) {
                     switchServer(newAppId);
                 }
+            });
+
+            ipcRenderer.on('team-list-updated', (_event, teams) => {
+                updateServerLabelMap(teams);
+            });
+
+            ipcRenderer.on('publish-team-list', (_event, teams) => {
+                publishTeamListToRemote(teams);
             });
 
             ipcRenderer.on('request-server-switch', (_event, data) => {
