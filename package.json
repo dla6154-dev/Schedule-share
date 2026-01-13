@@ -1,6 +1,6 @@
 {
   "name": "task-sharing-platform",
-  "version": "1.4.1",
+  "version": "1.6.0",
   "description": "Electron-based shared/private task board",
   "main": "main.js",
   "scripts": {
@@ -15,7 +15,12 @@
   ],
   "author": "Your Name",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dla6154-dev/Schedule-share.git"
+  },
   "dependencies": {
+    "electron-updater": "^6.3.0",
     "fs-extra": "^10.1.0"
   },
   "devDependencies": {
@@ -36,6 +41,13 @@
     },
     "win": {
       "target": "nsis"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dla6154-dev",
+        "repo": "Schedule-share"
+      }
+    ]
   }
 }

@@ -1,5 +1,7 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, Notification } = require('electron'); 
+const { app, BrowserWindow, screen, Menu, ipcMain, Notification, dialog } = require('electron'); 
 const path = require('path');
+const { autoUpdater } = require('electron-updater');
+const crypto = require('crypto');
 const fs = require('fs-extra'); // 설정 파일 처리를 위해 사용
 
 // 설정 파일 경로 정의
@@ -34,6 +36,18 @@ async function loadTeamList() {
             TEAM_SERVERS = INITIAL_TEAM_SERVERS;
             await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
         }
+        let changed = false;
+        TEAM_SERVERS = TEAM_SERVERS.map((server) => {
+            const normalized = normalizeTeamServer(server);
+            if (JSON.stringify(normalized) !== JSON.stringify(server)) {
+                changed = true;
+            }
+            return normalized;
+        });
+        if (changed) {
+            await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
+        }
+
     } catch (e) {
         console.error('팀 목록 로드 중 오류 발생:', e);
         TEAM_SERVERS = INITIAL_TEAM_SERVERS; // 오류 시 기본값 사용
@@ -67,6 +81,122 @@ async function saveServerId(appId) {
     } catch (e) {
         console.error('설정 파일 저장 중 오류 발생:', e);
     }
+}
+
+function getServerById(appId) {
+    return TEAM_SERVERS.find(team => team.appId === appId) || null;
+}
+
+function isServerPasswordSet(server) {
+    return Boolean(server && server.passwordHash && server.passwordSalt);
+}
+
+function normalizeTeamServer(server) {
+    const normalized = { ...server };
+    if (typeof normalized.allowNoPassword !== 'boolean') {
+        normalized.allowNoPassword = !isServerPasswordSet(normalized);
+    }
+    if (isServerPasswordSet(normalized)) {
+        normalized.allowNoPassword = false;
+    }
+    if (normalized.allowNoPassword) {
+        normalized.passwordSalt = '';
+        normalized.passwordHash = '';
+    }
+    return normalized;
+}
+
+function hashPassword(password, salt) {
+    return crypto.pbkdf2Sync(String(password), salt, 100000, 32, 'sha256').toString('hex');
+}
+
+function verifyServerPassword(server, password) {
+    if (!server) {
+        return { ok: false, error: '서버를 찾을 수 없습니다.' };
+    }
+    if (server.allowNoPassword) {
+        return { ok: true };
+    }
+    if (!isServerPasswordSet(server)) {
+        return { ok: false, error: '비밀번호가 설정되어 있지 않습니다.' };
+    }
+    const candidate = hashPassword(password, server.passwordSalt);
+    if (candidate !== server.passwordHash) {
+        return { ok: false, error: '비밀번호가 일치하지 않습니다.' };
+    }
+    return { ok: true };
+}
+
+async function updateServerPassword(appId, currentPassword, newPassword, allowNoPassword) {
+    const server = getServerById(appId);
+    if (!server) {
+        return { ok: false, error: '서버를 찾을 수 없습니다.' };
+    }
+
+    if (isServerPasswordSet(server)) {
+        const verify = verifyServerPassword(server, currentPassword);
+        if (!verify.ok) {
+            return verify;
+        }
+    } else if (currentPassword) {
+        return { ok: false, error: '현재 비밀번호가 설정되어 있지 않습니다. 빈 값으로 시도해주세요.' };
+    }
+
+    if (allowNoPassword) {
+        server.allowNoPassword = true;
+        server.passwordSalt = '';
+        server.passwordHash = '';
+        try {
+            await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
+        } catch (e) {
+            console.error('서버 비밀번호 저장 중 오류 발생:', e);
+            return { ok: false, error: '서버 비밀번호 저장에 실패했습니다.' };
+        }
+        return { ok: true };
+    }
+
+    if (!newPassword) {
+        return { ok: false, error: '새 비밀번호를 입력해주세요.' };
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(newPassword, salt);
+    server.passwordSalt = salt;
+    server.passwordHash = hash;
+    server.allowNoPassword = false;
+
+    try {
+        await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
+    } catch (e) {
+        console.error('서버 비밀번호 저장 중 오류 발생:', e);
+        return { ok: false, error: '서버 비밀번호 저장에 실패했습니다.' };
+    }
+
+    return { ok: true };
+}
+
+function requestServerSwitch(appId, windowRef) {
+    const server = getServerById(appId);
+    if (!windowRef || !server) return;
+    if (server.allowNoPassword) {
+        applyServerSwitch(appId, windowRef);
+        return;
+    }
+    windowRef.webContents.send('request-server-switch', {
+        appId: server.appId,
+        label: server.label || server.appId
+    });
+}
+
+function applyServerSwitch(appId, windowRef) {
+    const server = getServerById(appId);
+    if (!server) return;
+    CURRENT_APP_ID = appId;
+    if (windowRef) {
+        windowRef.webContents.send('set-server-id', appId);
+    }
+    saveServerId(appId);
+    createApplicationMenu(CURRENT_APP_ID);
 }
 
 // ===============================================================
@@ -126,7 +256,32 @@ function setupIpcListeners() {
     });
     
     // 알림 요청 리스너
-    ipcMain.on('show-notification', (event, { title, body }) => {
+    
+    ipcMain.on('get-app-version', (event) => {
+        event.returnValue = app.getVersion();
+    });
+
+    ipcMain.handle('get-team-list', () => TEAM_SERVERS);
+
+    ipcMain.handle('verify-server-password', (_event, { appId, password }) => {
+        const server = getServerById(appId);
+        return verifyServerPassword(server, password);
+    });
+
+    ipcMain.handle('confirm-server-switch', (event, { appId, password }) => {
+        const server = getServerById(appId);
+        const verify = verifyServerPassword(server, password);
+        if (!verify.ok) return verify;
+        const windowRef = BrowserWindow.fromWebContents(event.sender) || MAIN_WINDOW;
+        applyServerSwitch(appId, windowRef);
+        return { ok: true };
+    });
+
+    ipcMain.handle('update-server-password', async (_event, { appId, currentPassword, newPassword, allowNoPassword }) => {
+        return updateServerPassword(appId, currentPassword, newPassword, allowNoPassword);
+    });
+
+ipcMain.on('show-notification', (event, { title, body }) => {
         if (Notification.isSupported()) {
             new Notification({
                 title: title,
@@ -155,14 +310,13 @@ function createApplicationMenu(currentAppId) {
             checked: server.appId === currentAppId, 
             click: () => {
                 const focusedWindow = BrowserWindow.getFocusedWindow();
-                CURRENT_APP_ID = server.appId;
-                if (focusedWindow) {
-                    // IPC 통신으로 renderer에 새 App ID 전달 (서버 전환 명령)
-                    focusedWindow.webContents.send('set-server-id', server.appId);
-                    // [추가] 서버 전환 시 ID를 영구적으로 저장
-                    saveServerId(server.appId); 
+                if (server.appId === CURRENT_APP_ID) {
+                    Menu.sendActionToFirstResponder('hide');
+                    return;
                 }
-                // 메뉴 라디오 상태를 즉시 반영
+                if (focusedWindow) {
+                    requestServerSwitch(server.appId, focusedWindow);
+                }
                 createApplicationMenu(CURRENT_APP_ID);
                 Menu.sendActionToFirstResponder('hide');
             }
@@ -229,6 +383,79 @@ function setAutoStart() {
 // 2. 메인 창 생성 함수 (일반 창 스타일 및 IPC 활성화)
 // ===============================================================
 
+// ===============================================================
+// 1.1 Auto Update (GitHub Releases)
+// ===============================================================
+function setupAutoUpdater(mainWindow) {
+    if (!app.isPackaged) {
+        console.log('Auto update skipped in development mode.');
+        return;
+    }
+
+    autoUpdater.autoDownload = false;
+
+    const sendUpdateEvent = (channel, payload) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.webContents.send(channel, payload);
+    };
+
+
+    autoUpdater.on('error', (err) => {
+        console.error('Auto update error:', err);
+    });
+
+    autoUpdater.on('update-available', () => {
+        const messageBoxOptions = {
+            type: 'info',
+            buttons: ['다운로드', '나중에'],
+            defaultId: 0,
+            cancelId: 1,
+            title: '업데이트 발견',
+            message: '새 버전이 있습니다. 지금 다운로드할까요?'
+        };
+
+        dialog.showMessageBox(mainWindow, messageBoxOptions).then((result) => {
+            if (result.response === 0) {
+                sendUpdateEvent('update-download-start');
+                autoUpdater.downloadUpdate();
+            }
+        });
+    });
+
+    autoUpdater.on('update-not-available', () => {
+        console.log('No updates available.');
+    });
+
+    autoUpdater.on('download-progress', (progress) => {
+        sendUpdateEvent('update-download-progress', {
+            percent: progress.percent,
+            bytesPerSecond: progress.bytesPerSecond,
+            transferred: progress.transferred,
+            total: progress.total
+        });
+    });
+
+    autoUpdater.on('update-downloaded', () => {
+        sendUpdateEvent('update-download-complete');
+        const messageBoxOptions = {
+            type: 'info',
+            buttons: ['지금 재시작', '나중에'],
+            defaultId: 0,
+            cancelId: 1,
+            title: '업데이트 준비 완료',
+            message: '업데이트가 다운로드되었습니다. 지금 재시작할까요?'
+        };
+
+        dialog.showMessageBox(mainWindow, messageBoxOptions).then((result) => {
+            if (result.response === 0) {
+                autoUpdater.quitAndInstall();
+            }
+        });
+    });
+
+    autoUpdater.checkForUpdates();
+}
+
 function createWindow(initialAppId) {
     const primaryDisplay = screen.getPrimaryDisplay();
     const { width, height } = primaryDisplay.workAreaSize;
@@ -261,6 +488,8 @@ function createWindow(initialAppId) {
             contextIsolation: false, 
         }
     });
+
+    MAIN_WINDOW = mainWindow;
 
     // ready-to-show 이벤트
     mainWindow.on('ready-to-show', () => {
@@ -302,10 +531,8 @@ function createWindow(initialAppId) {
         type: 'radio',
         checked: server.appId === CURRENT_APP_ID, 
         click: () => {
-            CURRENT_APP_ID = server.appId;
-            mainWindow.webContents.send('set-server-id', server.appId);
-            saveServerId(server.appId); 
-            createApplicationMenu(CURRENT_APP_ID);
+            if (server.appId === CURRENT_APP_ID) return;
+            requestServerSwitch(server.appId, mainWindow);
         }
     }));
 
@@ -338,6 +565,8 @@ function createWindow(initialAppId) {
         ]);
         currentMenu.popup(mainWindow, params.x, params.y);
     });
+
+    return mainWindow;
 }
 
 // ===============================================================
@@ -363,7 +592,8 @@ app.whenReady().then(async () => {
     createApplicationMenu(initialAppId); 
     
     // 메인 창 생성
-    createWindow(initialAppId); 
+    const mainWindow = createWindow(initialAppId); 
+    setupAutoUpdater(mainWindow);
     
     // 자동 실행 설정 (앱 설치 시 최초 1회만 실행되도록 main.js에 구현되어 있음)
     setAutoStart(); 

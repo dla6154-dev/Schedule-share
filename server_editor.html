@@ -105,7 +105,10 @@
             const newAppId = `user-team-${Date.now().toString().slice(-6)}`;
             currentTeams.push({
                 label: '새 팀 (이름 수정)',
-                appId: newAppId 
+                appId: newAppId,
+                passwordSalt: '',
+                passwordHash: '',
+                allowNoPassword: true
             });
             renderTeams();
             container.scrollTop = container.scrollHeight; // 스크롤 맨 아래로 이동
