@@ -1,6 +1,6 @@
 {
   "name": "task-sharing-platform",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Electron-based shared/private task board",
   "main": "main.js",
   "scripts": {
