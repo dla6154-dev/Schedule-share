@@ -6,7 +6,12 @@
     <title>서버 목록 편집</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; padding: 20px; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            padding: 20px;
+            -webkit-app-region: no-drag;
+        }
         .server-item { 
             background-color: white; 
             border: 1px solid #e2e8f0; 
@@ -24,6 +29,17 @@
         .input-group label { display: block; font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 4px; }
         .input-group input { width: 100%; padding: 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 14px; }
         .status-error { color: #dc2626; }
+        input {
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        #admin-modal,
+        #admin-modal * {
+            -webkit-app-region: no-drag;
+        }
+        #admin-modal input {
+            pointer-events: auto;
+        }
     </style>
 </head>
 <body class="p-5">
@@ -50,11 +66,31 @@
         </div>
     </div>
 
-    <script>
+    
+        <div id="admin-modal" class="fixed inset-0 hidden items-center justify-center bg-black bg-opacity-40 z-50">
+        <div class="bg-white rounded-lg shadow-lg w-full max-w-sm p-4">
+            <h2 id="admin-modal-title" class="text-lg font-semibold mb-3">관리자 비밀번호</h2>
+            <div class="space-y-2">
+                <input id="admin-modal-input" type="password" class="w-full border border-slate-300 rounded px-3 py-2 text-sm" placeholder="비밀번호">
+                <div id="admin-modal-confirm-wrap" class="hidden">
+                    <input id="admin-modal-confirm" type="password" class="w-full border border-slate-300 rounded px-3 py-2 text-sm" placeholder="비밀번호 확인">
+                </div>
+                <p id="admin-modal-error" class="text-sm text-red-600"></p>
+            </div>
+            <div class="mt-4 flex justify-end space-x-2">
+                <button id="admin-modal-cancel" class="px-3 py-2 text-sm bg-gray-200 rounded">취소</button>
+                <button id="admin-modal-ok" class="px-3 py-2 text-sm text-white bg-indigo-600 rounded">확인</button>
+            </div>
+        </div>
+    </div>
+
+<script>
         const { ipcRenderer } = require('electron');
         const container = document.getElementById('server-list-container');
         const statusElement = document.getElementById('status');
         let currentTeams = [];
+        let originalAppIds = [];
+        let lastAdminPassword = '';
 
         // UI 렌더링 함수
         function renderTeams() {
@@ -92,9 +128,139 @@
             statusElement.textContent = ''; // 오류 메시지 초기화
         }
 
-        // 제거 버튼 핸들러
-        function handleRemove(e) {
+        function getRemovedAppIds() {
+            const currentIds = new Set(currentTeams.map((team) => team.appId));
+            return originalAppIds.filter((appId) => !currentIds.has(appId));
+        }
+
+                                const adminModal = document.getElementById('admin-modal');
+        const adminModalTitle = document.getElementById('admin-modal-title');
+        const adminModalInput = document.getElementById('admin-modal-input');
+        const adminModalConfirmWrap = document.getElementById('admin-modal-confirm-wrap');
+        const adminModalConfirm = document.getElementById('admin-modal-confirm');
+        const adminModalError = document.getElementById('admin-modal-error');
+        const adminModalCancel = document.getElementById('admin-modal-cancel');
+        const adminModalOk = document.getElementById('admin-modal-ok');
+
+        function openAdminModal({ title, confirm }) {
+            return new Promise((resolve) => {
+                adminModalTitle.textContent = title;
+                adminModalInput.value = '';
+                adminModalConfirm.value = '';
+                adminModalInput.disabled = false;
+                adminModalInput.readOnly = false;
+                adminModalConfirm.disabled = false;
+                adminModalConfirm.readOnly = false;
+                adminModalError.textContent = '';
+                if (confirm) {
+                    adminModalConfirmWrap.classList.remove('hidden');
+                } else {
+                    adminModalConfirmWrap.classList.add('hidden');
+                }
+                adminModal.classList.remove('hidden');
+                adminModal.classList.add('flex');
+
+                setTimeout(() => {
+                    if (confirm) {
+                        adminModalConfirm.focus();
+                        adminModalConfirm.select();
+                    } else {
+                        adminModalInput.focus();
+                        adminModalInput.select();
+                    }
+                }, 0);
+
+                const cleanup = () => {
+                    adminModal.classList.add('hidden');
+                    adminModal.classList.remove('flex');
+                    adminModalCancel.onclick = null;
+                    adminModalOk.onclick = null;
+                    adminModalInput.onkeydown = null;
+                    adminModalConfirm.onkeydown = null;
+                };
+
+                const onCancel = () => {
+                    cleanup();
+                    resolve({ ok: false, canceled: true });
+                };
+
+                const onOk = () => {
+                    const password = adminModalInput.value.trim();
+                    if (!password) {
+                        adminModalError.textContent = '비밀번호를 입력하세요.';
+                        return;
+                    }
+                    if (confirm) {
+                        const confirmPassword = adminModalConfirm.value.trim();
+                        if (confirmPassword !== password) {
+                            adminModalError.textContent = '비밀번호가 일치하지 않습니다.';
+                            return;
+                        }
+                    }
+                    cleanup();
+                    resolve({ ok: true, password });
+                };
+
+                adminModalCancel.onclick = onCancel;
+                adminModalOk.onclick = onOk;
+                adminModalInput.onkeydown = (event) => {
+                    if (event.key === 'Enter') {
+                        onOk();
+                    }
+                };
+                adminModalConfirm.onkeydown = (event) => {
+                    if (event.key === 'Enter') {
+                        onOk();
+                    }
+                };
+            });
+        }
+
+        async function requestAdminPassword() {
+            const probe = await ipcRenderer.invoke('verify-admin-password', { password: '__probe__' });
+            const hasAdmin = !(probe && probe.code === 'NO_ADMIN_PASSWORD');
+
+            if (!hasAdmin) {
+                const setup = await openAdminModal({ title: '관리자 비밀번호 설정', confirm: true });
+                if (!setup.ok) {
+                    return { ok: false, error: '관리자 비밀번호 설정이 취소되었습니다.' };
+                }
+                const setResult = await ipcRenderer.invoke('set-admin-password', { password: setup.password });
+                if (setResult && setResult.ok) {
+                    return { ok: true, password: setup.password };
+                }
+                return { ok: false, error: (setResult && setResult.error) || '관리자 비밀번호 설정에 실패했습니다.' };
+            }
+
+            const input = await openAdminModal({ title: '관리자 비밀번호 입력', confirm: false });
+            if (!input.ok) {
+                return { ok: false, canceled: true };
+            }
+
+            const verify = await ipcRenderer.invoke('verify-admin-password', { password: input.password });
+            if (verify && verify.ok) {
+                return { ok: true, password: input.password };
+            }
+
+            return { ok: false, error: (verify && verify.error) || '관리자 비밀번호 확인에 실패했습니다.' };
+        }
+
+async function handleRemove(e) {
             const index = parseInt(e.target.closest('.remove-btn').dataset.index);
+            const confirmed = window.confirm('이 서버를 삭제할까요?');
+            if (!confirmed) {
+                return;
+            }
+
+            const auth = await requestAdminPassword();
+            if (!auth.ok) {
+                if (auth.error) {
+                    statusElement.textContent = auth.error;
+                }
+                return;
+            }
+
+            lastAdminPassword = auth.password;
             currentTeams.splice(index, 1);
             renderTeams();
         }
@@ -118,11 +284,12 @@
         ipcRenderer.send('request-team-list');
         ipcRenderer.on('response-team-list', (event, data) => {
             currentTeams = data;
+            originalAppIds = data.map((team) => team.appId);
             renderTeams();
         });
 
         // 2. 저장 버튼 클릭 시
-        document.getElementById('save-btn').addEventListener('click', () => {
+        document.getElementById('save-btn').addEventListener('click', async () => {
             // 유효성 검증 (App ID는 이미 main.js에서 로드/자동 생성되었으므로 label만 검증)
             if (currentTeams.length === 0) {
                  statusElement.textContent = '오류: 팀 목록이 비어있습니다.';
@@ -137,8 +304,24 @@
                 // App ID의 유효성은 main.js가 책임집니다. 여기서는 변경되지 않음을 가정합니다.
             }
 
+            const removedAppIds = getRemovedAppIds();
+            let adminPassword = '';
+            if (removedAppIds.length > 0) {
+                if (!lastAdminPassword) {
+                    const auth = await requestAdminPassword();
+                    if (!auth.ok) {
+                        if (auth.error) {
+                            statusElement.textContent = auth.error;
+                        }
+                        return;
+                    }
+                    lastAdminPassword = auth.password;
+                }
+                adminPassword = lastAdminPassword;
+            }
+
             // 메인 프로세스에 저장 요청 및 앱 재시작 요청
-            ipcRenderer.send('save-team-list', currentTeams);
+            ipcRenderer.send('save-team-list', { teams: currentTeams, adminPassword });
             statusElement.textContent = '저장 중... 앱이 곧 재시작됩니다.';
         });
         
@@ -151,6 +334,12 @@
         ipcRenderer.on('save-success-close', () => {
              window.close();
         });
+
+        ipcRenderer.on('save-error', (_event, message) => {
+            statusElement.textContent = message || '저장에 실패했습니다.';
+        });
     </script>
+
+    
 </body>
 </html>

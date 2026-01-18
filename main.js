@@ -8,6 +8,7 @@ const fs = require('fs-extra'); // 설정 파일 처리를 위해 사용
 const USER_DATA_PATH = app.getPath('userData');
 const SERVER_SETTINGS_PATH = path.join(USER_DATA_PATH, 'server_settings.json'); // 마지막 사용 ID 저장
 const TEAM_LIST_PATH = path.join(USER_DATA_PATH, 'team_list.json'); // 팀 목록 저장
+const ADMIN_SETTINGS_PATH = path.join(USER_DATA_PATH, 'admin_settings.json'); // 관리자 비밀번호 저장
 
 // 기본 팀 목록 (설정 파일이 없을 경우 사용)
 const INITIAL_TEAM_SERVERS = [
@@ -20,6 +21,7 @@ const INITIAL_TEAM_SERVERS = [
 let TEAM_SERVERS = []; // 로드된 팀 목록을 저장할 변수
 let DEFAULT_APP_ID = INITIAL_TEAM_SERVERS[0].appId; // 초기 기본 ID
 let CURRENT_APP_ID = DEFAULT_APP_ID; // 현재 선택된 서버 ID (라디오 표시용)
+let ADMIN_SETTINGS = { passwordSalt: '', passwordHash: '' };
 
 
 // ===============================================================
@@ -117,6 +119,54 @@ function normalizeTeamServer(server) {
 
 function hashPassword(password, salt) {
     return crypto.pbkdf2Sync(String(password), salt, 100000, 32, 'sha256').toString('hex');
+}
+
+async function loadAdminSettings() {
+    try {
+        if (await fs.pathExists(ADMIN_SETTINGS_PATH)) {
+            const settings = await fs.readJson(ADMIN_SETTINGS_PATH);
+            ADMIN_SETTINGS = settings || { passwordSalt: '', passwordHash: '' };
+        } else {
+            ADMIN_SETTINGS = { passwordSalt: '', passwordHash: '' };
+        }
+    } catch (e) {
+        console.error('관리자 설정 로드 중 오류 발생:', e);
+        ADMIN_SETTINGS = { passwordSalt: '', passwordHash: '' };
+    }
+}
+
+function isAdminPasswordSet() {
+    return Boolean(ADMIN_SETTINGS && ADMIN_SETTINGS.passwordSalt && ADMIN_SETTINGS.passwordHash);
+}
+
+async function setAdminPassword(newPassword) {
+    if (!newPassword) {
+        return { ok: false, error: '관리자 비밀번호를 입력해주세요.' };
+    }
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = hashPassword(newPassword, salt);
+    ADMIN_SETTINGS = { passwordSalt: salt, passwordHash: hash };
+    try {
+        await fs.writeJson(ADMIN_SETTINGS_PATH, ADMIN_SETTINGS, { spaces: 2 });
+    } catch (e) {
+        console.error('관리자 비밀번호 저장 중 오류 발생:', e);
+        return { ok: false, error: '관리자 비밀번호 저장에 실패했습니다.' };
+    }
+    return { ok: true };
+}
+
+function verifyAdminPassword(password) {
+    if (!isAdminPasswordSet()) {
+        return { ok: false, code: 'NO_ADMIN_PASSWORD', error: '관리자 비밀번호가 설정되어 있지 않습니다.' };
+    }
+    if (!password) {
+        return { ok: false, code: 'EMPTY_PASSWORD', error: '관리자 비밀번호를 입력해주세요.' };
+    }
+    const candidate = hashPassword(password, ADMIN_SETTINGS.passwordSalt);
+    if (candidate !== ADMIN_SETTINGS.passwordHash) {
+        return { ok: false, code: 'INVALID_PASSWORD', error: '관리자 비밀번호가 일치하지 않습니다.' };
+    }
+    return { ok: true };
 }
 
 function verifyServerPassword(server, password) {
@@ -247,13 +297,25 @@ function setupIpcListeners() {
         event.reply('response-team-list', TEAM_SERVERS);
     });
 
-    ipcMain.on('save-team-list', async (event, newTeamList) => {
+    ipcMain.on('save-team-list', async (event, payload) => {
         try {
-            const normalized = Array.isArray(newTeamList)
-                ? newTeamList.map(normalizeTeamServer)
-                : [];
+            const incomingTeams = payload && Array.isArray(payload.teams) ? payload.teams : [];
+            const adminPassword = payload && typeof payload.adminPassword === 'string'
+                ? payload.adminPassword
+                : '';
 
-            // ?? ?????? ???????????
+            const normalized = incomingTeams.map(normalizeTeamServer);
+            const incomingIds = new Set(normalized.map((team) => team.appId));
+            const removedTeams = TEAM_SERVERS.filter((team) => !incomingIds.has(team.appId));
+            if (removedTeams.length > 0) {
+                const verify = verifyAdminPassword(adminPassword);
+                if (!verify.ok) {
+                    event.reply('save-error', verify.error);
+                    return;
+                }
+            }
+
+            // 팀 목록 파일에 저장
             await fs.writeJson(TEAM_LIST_PATH, normalized, { spaces: 2 });
             TEAM_SERVERS = normalized;
 
@@ -272,20 +334,28 @@ function setupIpcListeners() {
                 MAIN_WINDOW.webContents.send('publish-team-list', TEAM_SERVERS);
             }
 
-            // ????? ????????? ????? ???????????????????
+            // 성공 메시지 전송 및 편집기 창 닫기
             event.reply('save-success-close');
         } catch (e) {
-            console.error('?? ?????? ???????????? ??????:', e);
+            console.error('팀 목록 저장 중 오류 발생:', e);
+            event.reply('save-error', '팀 목록 저장 중 오류가 발생했습니다.');
         }
     });
-    
-    // 알림 요청 리스너
-    
+
     ipcMain.on('get-app-version', (event) => {
         event.returnValue = app.getVersion();
     });
 
     ipcMain.handle('get-team-list', () => TEAM_SERVERS);
+    ipcMain.handle('verify-admin-password', (_event, { password }) => {
+        return verifyAdminPassword(password);
+    });
+    ipcMain.handle('set-admin-password', async (_event, { password }) => {
+        if (isAdminPasswordSet()) {
+            return { ok: false, error: '관리자 비밀번호가 이미 설정되어 있습니다.' };
+        }
+        return await setAdminPassword(password);
+    });
 
     ipcMain.handle('verify-server-password', (_event, { appId, password }) => {
         const server = getServerById(appId);
@@ -313,7 +383,7 @@ function setupIpcListeners() {
         try {
             await fs.writeJson(TEAM_LIST_PATH, TEAM_SERVERS, { spaces: 2 });
         } catch (e) {
-            console.error('?? ?????? ???????????? ??????:', e);
+            console.error('팀 목록 동기화 중 오류 발생:', e);
         }
         createApplicationMenu(CURRENT_APP_ID);
         broadcastTeamListUpdate(TEAM_SERVERS);
@@ -431,7 +501,8 @@ function setupAutoUpdater(mainWindow) {
         return;
     }
 
-    autoUpdater.autoDownload = false;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
 
     const sendUpdateEvent = (channel, payload) => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -444,21 +515,7 @@ function setupAutoUpdater(mainWindow) {
     });
 
     autoUpdater.on('update-available', () => {
-        const messageBoxOptions = {
-            type: 'info',
-            buttons: ['다운로드', '나중에'],
-            defaultId: 0,
-            cancelId: 1,
-            title: '업데이트 발견',
-            message: '새 버전이 있습니다. 지금 다운로드할까요?'
-        };
-
-        dialog.showMessageBox(mainWindow, messageBoxOptions).then((result) => {
-            if (result.response === 0) {
-                sendUpdateEvent('update-download-start');
-                autoUpdater.downloadUpdate();
-            }
-        });
+        sendUpdateEvent('update-download-start');
     });
 
     autoUpdater.on('update-not-available', () => {
@@ -618,6 +675,8 @@ app.whenReady().then(async () => {
     if (process.platform === 'win32') {
         app.setAppUserModelId(app.getName());
     }
+
+    await loadAdminSettings();
 
     // IPC 리스너를 먼저 설정합니다.
     setupIpcListeners(); 
