@@ -1,6 +1,6 @@
 {
   "name": "task-sharing-platform",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Electron-based shared/private task board",
   "main": "main.js",
   "scripts": {
@@ -32,8 +32,9 @@
     "productName": "업무 공유 플랫폼",
     "files": [
       "main.js",
-      "index.html",
-      "server_editor.html",
+    "index.html",
+    "캘린더v1.2.html",
+    "server_editor.html",
       "preload.js"
     ],
     "directories": {
