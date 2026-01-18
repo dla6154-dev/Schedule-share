@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --win",
-    "web": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path docs) { Remove-Item -Recurse -Force docs }; New-Item -ItemType Directory -Path docs | Out-Null; Copy-Item index.html docs\\\\index.html\""
+    "web": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path docs) { Remove-Item -Recurse -Force docs }; New-Item -ItemType Directory -Path docs | Out-Null; Copy-Item index.html docs\\\\index.html; Copy-Item 캘린더v1.2.html docs\\\\캘린더v1.2.html\""
   },
   "keywords": [
     "electron",
