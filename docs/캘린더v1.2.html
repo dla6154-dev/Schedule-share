@@ -169,10 +169,6 @@
                     <h2 id="month-year-display"></h2>
                     <button id="next-month-button" class="header-button"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg></button>
                     <button id="today-button" class="button button-outline" style="margin-left: 1rem;">오늘</button>
-                    <div id="header-event-preview" class="header-event-preview">
-                        <span id="header-preview-line" class="preview-line"></span>
-                        <span id="header-preview-text"></span>
-                    </div>
                 </div>
                 <button id="open-register-modal-button" class="button" style="background-color: #10b981;">+ 일정 등록</button>
             </div>
@@ -352,9 +348,9 @@
             const colorPaletteContainer = document.getElementById('color-palette');
             const editingEventIdInput = document.getElementById('editing-event-id');
             const editingEventOriginalDateInput = document.getElementById('editing-event-original-date');
-            const headerEventPreview = document.getElementById('header-event-preview');
-            const headerPreviewLine = document.getElementById('header-preview-line');
-            const headerPreviewText = document.getElementById('header-preview-text');
+            const headerEventPreview = null;
+            const headerPreviewLine = null;
+            const headerPreviewText = null;
 
             function initializeDateSelectors() {
                 const today = new Date();
@@ -419,11 +415,7 @@
             async function saveDataForMonth(keyPrefix, monthKey, data) { await writeMonthEvents(monthKey, data); }
 
             function setHeaderPreview(text, colors, shouldSave = true) {
-                if (!text) { headerEventPreview.style.display = 'none'; return; }
-                headerPreviewText.textContent = text;
-                headerPreviewLine.style.backgroundColor = colors.bg;
-                headerPreviewLine.style.borderColor = colors.border;
-                headerEventPreview.style.display = 'flex';
+                if (!text) return;
                 if (shouldSave) localStorage.setItem(STORAGE_KEY_HEADER_PREVIEW, JSON.stringify({ text, colors }));
             }
 
@@ -518,58 +510,62 @@
                     curr.setDate(curr.getDate() + 1);
                 }
 
-                // 기간 일정 바 계산 및 렌더링
-                const rangeGroups = new Map();
-                for (const ev of visibleEvents) {
-                    if (!ev.rangeId || !dateIndexMap[ev.date]) continue;
-                    const k = `range:${ev.rangeId}`;
-                    if (!rangeGroups.has(k)) rangeGroups.set(k, { title: ev.title, colors: ev.colors, dates: new Set(), dateToEvent: new Map() });
-                    const g = rangeGroups.get(k);
-                    g.dates.add(ev.date);
-                    g.dateToEvent.set(ev.date, ev);
-                }
-
-                const rowLanes = Array.from({ length: 6 }, () => []);
-                const segments = [];
-                const toDateObj = (s) => new Date(`${s}T00:00:00`);
+                const SHOW_RANGE_BARS = true;
                 const dateToMaxLane = {};
+                const segments = [];
 
-                rangeGroups.forEach(g => {
-                    const sd = Array.from(g.dates).sort();
-                    let seqStart = sd[0], seqPrev = sd[0];
-                    for (let i = 1; i <= sd.length; i++) {
-                        const currD = sd[i];
-                        if (currD && (toDateObj(currD) - toDateObj(seqPrev) === 86400000)) { seqPrev = currD; continue; }
-                        const seqEnd = seqPrev;
-                        let startIdx = dateIndexMap[seqStart].index;
-                        const endIdx = dateIndexMap[seqEnd].index;
-                        while (startIdx <= endIdx) {
-                            const r = Math.floor(startIdx / 7);
-                            const lanes = rowLanes[r];
-                            let laneIdx = 0;
-                            const startCol = (startIdx % 7) + 1;
-                            const endCol = (Math.min(endIdx, r * 7 + 6) % 7) + 1;
-                            const segEndIdx = Math.min(endIdx, r * 7 + 6);
-
-                            while (lanes[laneIdx] && lanes[laneIdx].some(l => !(endCol < l.startCol || startCol > l.endCol))) { laneIdx++; }
-                            if (!lanes[laneIdx]) lanes[laneIdx] = [];
-                            lanes[laneIdx].push({ startCol, endCol });
-
-                            for (let k = startIdx; k <= segEndIdx; k++) {
-                                dateToMaxLane[indexToDate[k]] = Math.max(dateToMaxLane[indexToDate[k]] || 0, laneIdx + 1);
-                            }
-
-                            segments.push({
-                                row: r + 1, startCol, endCol, laneIdx,
-                                isStart: startIdx === dateIndexMap[seqStart].index,
-                                isEnd: segEndIdx === dateIndexMap[seqEnd].index,
-                                colors: g.colors, event: g.dateToEvent.get(indexToDate[startIdx])
-                            });
-                            startIdx = segEndIdx + 1;
-                        }
-                        if (currD) { seqStart = currD; seqPrev = currD; }
+                if (SHOW_RANGE_BARS) {
+                    // 기간 일정 바 계산 및 렌더링
+                    const rangeGroups = new Map();
+                    for (const ev of visibleEvents) {
+                        if (!ev.rangeId || !dateIndexMap[ev.date]) continue;
+                        const k = `range:${ev.rangeId}`;
+                        if (!rangeGroups.has(k)) rangeGroups.set(k, { rangeId: ev.rangeId, title: ev.title, colors: ev.colors, dates: new Set(), dateToEvent: new Map() });
+                        const g = rangeGroups.get(k);
+                        g.dates.add(ev.date);
+                        g.dateToEvent.set(ev.date, ev);
                     }
-                });
+
+                    const rowLanes = Array.from({ length: 6 }, () => []);
+                    const toDateObj = (s) => new Date(`${s}T00:00:00`);
+
+                    rangeGroups.forEach(g => {
+                        const sd = Array.from(g.dates).sort();
+                        let seqStart = sd[0], seqPrev = sd[0];
+                        for (let i = 1; i <= sd.length; i++) {
+                            const currD = sd[i];
+                            if (currD && (toDateObj(currD) - toDateObj(seqPrev) === 86400000)) { seqPrev = currD; continue; }
+                            const seqEnd = seqPrev;
+                            let startIdx = dateIndexMap[seqStart].index;
+                            const endIdx = dateIndexMap[seqEnd].index;
+                            while (startIdx <= endIdx) {
+                                const r = Math.floor(startIdx / 7);
+                                const lanes = rowLanes[r];
+                                let laneIdx = 0;
+                                const startCol = (startIdx % 7) + 1;
+                                const endCol = (Math.min(endIdx, r * 7 + 6) % 7) + 1;
+                                const segEndIdx = Math.min(endIdx, r * 7 + 6);
+
+                                while (lanes[laneIdx] && lanes[laneIdx].some(l => !(endCol < l.startCol || startCol > l.endCol))) { laneIdx++; }
+                                if (!lanes[laneIdx]) lanes[laneIdx] = [];
+                                lanes[laneIdx].push({ startCol, endCol });
+
+                                for (let k = startIdx; k <= segEndIdx; k++) {
+                                    dateToMaxLane[indexToDate[k]] = Math.max(dateToMaxLane[indexToDate[k]] || 0, laneIdx + 1);
+                                }
+
+                                segments.push({
+                                    row: r + 1, startCol, endCol, laneIdx,
+                                    isStart: startIdx === dateIndexMap[seqStart].index,
+                                    isEnd: segEndIdx === dateIndexMap[seqEnd].index,
+                                    colors: g.colors, event: g.dateToEvent.get(indexToDate[startIdx])
+                                });
+                                startIdx = segEndIdx + 1;
+                            }
+                            if (currD) { seqStart = currD; seqPrev = currD; }
+                        }
+                    });
+                }
 
                 // 일별 일정 및 패딩 적용
                 for (let i = 0; i < totalDaysToShow; i++) {
