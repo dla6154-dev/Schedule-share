@@ -700,6 +700,65 @@
                 }
             }
 
+            async function handleBulkAdd() {
+                const bulkInput = document.getElementById('bulk-input-area');
+                const bulkError = document.getElementById('bulk-error-message');
+                const raw = bulkInput.value.trim();
+                if (!raw) return;
+                if (!calendarAppId || !isAuthReady) {
+                    bulkError.textContent = 'Calendar is offline.';
+                    return;
+                }
+                bulkError.textContent = '';
+                const lines = raw.split(/\r?\n/).filter(Boolean);
+                const errors = [];
+                const monthUpdates = new Map();
+                const colors = selectedColor || COLOR_PALETTE[0];
+
+                const getWorkingEvents = (monthKey) => {
+                    if (!monthUpdates.has(monthKey)) {
+                        monthUpdates.set(monthKey, [...loadDataForMonth(STORAGE_KEY_EVENTS_PREFIX, monthKey)]);
+                    }
+                    return monthUpdates.get(monthKey);
+                };
+
+                let seed = Date.now();
+                lines.forEach((line, idx) => {
+                    const parts = line.split(',');
+                    if (parts.length < 2) {
+                        errors.push(`${idx + 1}번째 줄: 형식 오류`);
+                        return;
+                    }
+                    const dateStr = parts[0].trim();
+                    const title = parts.slice(1).join(',').trim();
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || !title) {
+                        errors.push(`${idx + 1}번째 줄: 날짜/제목 오류`);
+                        return;
+                    }
+                    const dt = new Date(`${dateStr}T00:00:00`);
+                    if (Number.isNaN(dt.getTime())) {
+                        errors.push(`${idx + 1}번째 줄: 날짜 오류`);
+                        return;
+                    }
+                    const mk = dateStr.substring(0, 7);
+                    const evs = getWorkingEvents(mk);
+                    evs.push({ id: seed++, title, date: dateStr, colors });
+                });
+
+                if (errors.length > 0) {
+                    bulkError.textContent = errors.slice(0, 3).join(' / ');
+                    return;
+                }
+
+                const saves = [];
+                monthUpdates.forEach((events, monthKey) => {
+                    saves.push(saveDataForMonth(STORAGE_KEY_EVENTS_PREFIX, monthKey, events));
+                });
+                await Promise.all(saves);
+                bulkInput.value = '';
+                renderCalendar();
+            }
+
             function openRegisterModal() {
                 modalTitle.textContent = '일정 등록'; saveEventButton.textContent = '저장';
                 const today = new Date(); eventYearSelect.value = today.getFullYear(); eventMonthSelect.value = today.getMonth() + 1;
@@ -770,6 +829,7 @@
             rangeToggle.addEventListener('change', () => { rangeDateGroup.style.display = rangeToggle.checked ? 'flex' : 'none'; if(rangeToggle.checked) syncEndDateToStart(); });
             document.getElementById('switch-to-bulk-button').addEventListener('click', () => { document.getElementById('single-form').style.display = 'none'; document.getElementById('bulk-form').style.display = 'block'; });
             document.getElementById('switch-to-single-button').addEventListener('click', () => { document.getElementById('single-form').style.display = 'block'; document.getElementById('bulk-form').style.display = 'none'; });
+            document.getElementById('bulk-add-button').addEventListener('click', handleBulkAdd);
             
             [registerModal, detailModal].forEach(m => {
                 m.addEventListener('click', (e) => { if (e.target === m) m.style.display = 'none'; });
