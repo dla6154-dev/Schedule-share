@@ -556,8 +556,8 @@ function createWindow(initialAppId) {
     const primaryDisplay = screen.getPrimaryDisplay();
     const { width, height } = primaryDisplay.workAreaSize;
 
-    const WIDGET_WIDTH = 450;
-    const WIDGET_HEIGHT = 650;
+    const WIDGET_WIDTH = 608;
+    const WIDGET_HEIGHT = 1020;
     
     const xPos = width - WIDGET_WIDTH - 20; 
     const yPos = 20; 
@@ -604,8 +604,8 @@ function createWindow(initialAppId) {
     mainWindow.webContents.setWindowOpenHandler(() => ({
         action: 'allow',
         overrideBrowserWindowOptions: {
-            width: 920,
-            height: 680,
+            width: 1000,
+            height: 900,
             resizable: true,
             autoHideMenuBar: true,
             webPreferences: {
