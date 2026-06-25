@@ -1,6 +1,7 @@
 const { app, BrowserWindow, screen, Menu, ipcMain, Notification, dialog } = require('electron'); 
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
+app.commandLine.appendSwitch('force-color-profile', 'srgb');
 const crypto = require('crypto');
 const fs = require('fs-extra'); // 설정 파일 처리를 위해 사용
 

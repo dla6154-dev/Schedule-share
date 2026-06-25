@@ -4,13 +4,39 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>업무 공유 플랫폼</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Inter 폰트 사용 */
+        :root {
+            color-scheme: light;
+        }
+        html {
+            text-rendering: optimizeLegibility;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* 브라우저/EXE 간 글꼴 차이를 줄이기 위해 폰트를 명시적으로 로드 */
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'Inter', 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif;
+            font-synthesis: none;
+            color: #111827;
             background-color: #f3f4f6;
+        }
+        button, input, textarea, select {
+            font: inherit;
+        }
+        h1, h2, h3, h4, h5, h6, strong, b {
+            font-weight: 700;
+        }
+        #open-task-modal-btn,
+        #open-notice-modal-btn,
+        #open-calendar-window-btn,
+        #holiday-work-panel,
+        #holiday-work-toggle-btn {
+            width: 100%;
         }
         /* 창 드래그 가능 영역 설정 */
         .window-drag-area {
@@ -105,6 +131,14 @@
         // ====================================================================
 
         let appId = null; 
+        const HOLIDAY_WORK_LINKS = Object.freeze({
+            admin: 'https://komsa-comp-leave.pages.dev/comp_leave_admin.html',
+            personal: 'https://komsa-comp-leave.pages.dev/'
+        });
+        const PRE_DEPARTURE_CHECK_LINKS = Object.freeze({
+            jindo: 'https://vessel-inspection-app.pages.dev/#jindo',
+            namgang: 'https://vessel-inspection-app.pages.dev/#namgang'
+        });
         
         let serverLabelMap = new Map();
         let serverSettingsMap = new Map();
@@ -197,7 +231,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.6.4";
+        let APP_VERSION = "1.6.9";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -241,6 +275,8 @@
             updateProgressPercent: 0,
             updateProgressText: '',
             isServerSwitchModalOpen: false,
+            isHolidayWorkMenuOpen: false,
+            isPreDepartureCheckMenuOpen: false,
             serverSwitchTargetAppId: null,
             serverSwitchTargetLabel: '',
             serverSwitchPassword: '',
@@ -1031,6 +1067,63 @@
             }
             calendarWindow.focus();
         };
+
+        window.toggleHolidayWorkMenu = () => {
+            setState({
+                isHolidayWorkMenuOpen: !state.isHolidayWorkMenuOpen,
+                isPreDepartureCheckMenuOpen: false
+            });
+        };
+
+        window.openHolidayWorkPage = (target) => {
+            const url = HOLIDAY_WORK_LINKS[target];
+            if (!url) return;
+            const holidayWindow = window.open(
+                url,
+                `holiday-work-${target}`,
+                'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
+            );
+            if (!holidayWindow) {
+                setState({ statusMessage: '팝업이 차단되어 휴일근로 페이지를 열 수 없습니다.' });
+                return;
+            }
+            holidayWindow.focus();
+            setState({ isHolidayWorkMenuOpen: false });
+        };
+
+        window.togglePreDepartureCheckMenu = () => {
+            setState({
+                isHolidayWorkMenuOpen: false,
+                isPreDepartureCheckMenuOpen: !state.isPreDepartureCheckMenuOpen
+            });
+        };
+
+        window.openPreDepartureCheckPage = (target) => {
+            const url = PRE_DEPARTURE_CHECK_LINKS[target];
+            if (!url) return;
+            const inspectionWindow = window.open(
+                url,
+                `pre-departure-check-${target}`,
+                'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
+            );
+            if (!inspectionWindow) {
+                setState({ statusMessage: '팝업이 차단되어 출항 전 횟수 페이지를 열 수 없습니다.' });
+                return;
+            }
+            inspectionWindow.focus();
+            setState({ isPreDepartureCheckMenuOpen: false });
+        };
+
+        document.addEventListener('click', (event) => {
+            if (!(event.target instanceof Element)) return;
+            if (state.isHolidayWorkMenuOpen && event.target.closest('#holiday-work-panel')) return;
+            if (state.isPreDepartureCheckMenuOpen && event.target.closest('#pre-departure-check-panel')) return;
+            if (!state.isHolidayWorkMenuOpen && !state.isPreDepartureCheckMenuOpen) return;
+            setState({
+                isHolidayWorkMenuOpen: false,
+                isPreDepartureCheckMenuOpen: false
+            });
+        });
 
         /**
          * 표 모달 열기/닫기
@@ -3889,18 +3982,27 @@
                     <div class="p-4 bg-indigo-600 text-white shadow-md window-drag-area relative">
                         <!-- ?? 명확한 드래그 영역 힌트 -->
                         <div class="drag-hint"></div> 
-                        <div class="flex items-center justify-between mb-2">
-                            <h1 class="text-2xl font-bold flex items-center window-no-drag">
-                                ${createIcon('Share2', 'w-6 h-6 mr-2')}
-                                업무 공유 플랫폼
-                            </h1>
+                        <div class="flex items-start justify-between gap-4 mb-2">
+                            <div class="min-w-0 flex-1 pr-2">
+                                <h1 class="text-2xl font-bold flex items-center window-no-drag">
+                                    ${createIcon('Share2', 'w-6 h-6 mr-2')}
+                                    업무 공유 플랫폼
+                                </h1>
+                                <p class="text-sm mt-3 opacity-90 truncate window-no-drag">
+                                    닉네임: <span class="font-bold bg-indigo-700 px-1 py-0.5 rounded text-sm">${state.nickname || '미설정 (필수 아님)'}</span> 
+                                    | ID: <span class="font-mono text-xs">${state.userId ? state.userId.substring(0, 8) + '...' : '로그인 중...'}</span>
+                                </p>
+                                <p class="text-xs font-mono text-gray-200 mt-1 window-no-drag">
+                                    현재 서버: ${getServerLabel(appId)}
+                                </p>
+                            </div>
                             
                             <!-- 버튼 그룹 -->
-                            <div class="flex items-start space-x-2 window-no-drag">
-                                <div class="flex flex-col space-y-1">
+                            <div class="flex items-start space-x-2 window-no-drag shrink-0">
+                                <div class="flex flex-col space-y-1 w-28">
                                     <button
                                         id="open-task-modal-btn"
-                                        class="flex items-center text-sm font-semibold px-3 py-1 bg-indigo-500 hover:bg-indigo-700 rounded-lg shadow transition duration-150"
+                                        class="w-full flex items-center justify-center text-sm font-semibold px-3 py-1 bg-indigo-500 hover:bg-indigo-700 rounded-lg shadow transition duration-150"
                                         title="새 업무 등록"
                                     >
                                         ${createIcon('PlusCircle', 'w-4 h-4 mr-1')}
@@ -3908,7 +4010,7 @@
                                     </button>
                                     <button
                                         id="open-notice-modal-btn"
-                                        class="relative flex items-center justify-center text-xs font-semibold px-3 py-1 bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg shadow transition duration-150"
+                                        class="relative w-full flex items-center justify-center text-xs font-semibold px-3 py-1 bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg shadow transition duration-150"
                                         title="공지사항 열기"
                                     >
                                         ${createIcon('Bell', 'w-4 h-4 mr-1')}
@@ -3918,13 +4020,69 @@
                                     ${canOpenCalendar ? `
                                         <button
                                             id="open-calendar-window-btn"
-                                            class="flex items-center justify-center text-xs font-semibold px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 rounded-lg shadow transition duration-150"
+                                            class="w-full flex items-center justify-center text-xs font-semibold px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 rounded-lg shadow transition duration-150"
                                             title="캘린더 열기"
                                         >
                                             ${createIcon('Calendar', 'w-4 h-4 mr-1')}
                                             캘린더
                                         </button>
                                     ` : ''}
+                                    <div id="holiday-work-panel" class="relative w-full">
+                                        <button
+                                            id="holiday-work-toggle-btn"
+                                            class="w-full flex items-center justify-center text-xs font-semibold px-3 py-1 bg-rose-100 text-rose-800 border border-rose-200 hover:bg-rose-200 rounded-lg shadow transition duration-150"
+                                            title="휴일근로 페이지 열기"
+                                        >
+                                            휴일근로
+                                        </button>
+                                        ${state.isHolidayWorkMenuOpen ? `
+                                            <div
+                                                id="holiday-work-menu"
+                                                class="absolute top-full left-0 mt-1 w-28 rounded-xl bg-white/95 border border-indigo-100 shadow-xl p-2 space-y-2 z-20"
+                                            >
+                                                <button
+                                                    id="holiday-work-admin-btn"
+                                                    class="w-full flex items-center justify-center rounded-lg bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 border border-indigo-100 hover:bg-indigo-100 transition duration-150"
+                                                >
+                                                    관리자
+                                                </button>
+                                                <button
+                                                    id="holiday-work-personal-btn"
+                                                    class="w-full flex items-center justify-center rounded-lg bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-700 border border-gray-200 hover:bg-gray-100 transition duration-150"
+                                                >
+                                                    개인용
+                                                </button>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    <div id="pre-departure-check-panel" class="relative w-full">
+                                        <button
+                                            id="pre-departure-check-toggle-btn"
+                                            class="w-full whitespace-nowrap flex items-center justify-center text-[11px] font-semibold px-3 py-1 bg-sky-100 text-sky-800 border border-sky-200 hover:bg-sky-200 rounded-lg shadow transition duration-150"
+                                            title="출항 전 횟수 페이지 열기"
+                                        >
+                                            출항 전 횟수
+                                        </button>
+                                        ${state.isPreDepartureCheckMenuOpen ? `
+                                            <div
+                                                id="pre-departure-check-menu"
+                                                class="absolute top-full left-0 mt-1 w-28 rounded-xl bg-white/95 border border-sky-100 shadow-xl p-2 space-y-2 z-20"
+                                            >
+                                                <button
+                                                    id="pre-departure-check-jindo-btn"
+                                                    class="w-full flex items-center justify-center rounded-lg bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 border border-sky-100 hover:bg-sky-100 transition duration-150"
+                                                >
+                                                    진도
+                                                </button>
+                                                <button
+                                                    id="pre-departure-check-namgang-btn"
+                                                    class="w-full flex items-center justify-center rounded-lg bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-700 border border-cyan-100 hover:bg-cyan-100 transition duration-150"
+                                                >
+                                                    남강
+                                                </button>
+                                            </div>
+                                        ` : ''}
+                                    </div>
                                 </div>
                                 <div class="flex flex-col space-y-1">
                                     <button
@@ -3957,14 +4115,6 @@
                                 </button>
                             </div>
                         </div>
-
-                        <p class="text-sm mt-1 opacity-90 truncate window-no-drag">
-                            닉네임: <span class="font-bold bg-indigo-700 px-1 py-0.5 rounded text-sm">${state.nickname || '미설정 (필수 아님)'}</span> 
-                            | ID: <span class="font-mono text-xs">${state.userId ? state.userId.substring(0, 8) + '...' : '로그인 중...'}</span>
-                        </p>
-                        <p class="text-xs font-mono text-gray-200 mt-1 window-no-drag">
-                            현재 서버: ${getServerLabel(appId)}
-                        </p>
                         <div class="mt-2 flex justify-end window-no-drag">
                             <span class="text-xs font-semibold bg-indigo-500/60 text-white px-2 py-0.5 rounded-full">v${APP_VERSION}</span>
                         </div>
@@ -4010,12 +4160,54 @@
             appContainer.innerHTML = appHtml;
 
             // 모달 열기 버튼 이벤트 리스너 재설정
-            document.getElementById('open-task-modal-btn').onclick = () => setState({ isTaskModalOpen: true, isNicknameModalOpen: false, statusMessage: '' });
-            document.getElementById('open-nickname-modal-btn').onclick = () => setState({ isNicknameModalOpen: true, isTaskModalOpen: false, statusMessage: '' });
-            document.getElementById('open-notice-modal-btn').onclick = () => setState({ isNoticeModalOpen: true, statusMessage: '' });
+            document.getElementById('open-task-modal-btn').onclick = () => setState({ isTaskModalOpen: true, isNicknameModalOpen: false, isHolidayWorkMenuOpen: false, isPreDepartureCheckMenuOpen: false, statusMessage: '' });
+            document.getElementById('open-nickname-modal-btn').onclick = () => setState({ isNicknameModalOpen: true, isTaskModalOpen: false, isHolidayWorkMenuOpen: false, isPreDepartureCheckMenuOpen: false, statusMessage: '' });
+            document.getElementById('open-notice-modal-btn').onclick = () => setState({ isNoticeModalOpen: true, isHolidayWorkMenuOpen: false, isPreDepartureCheckMenuOpen: false, statusMessage: '' });
             const calendarButton = document.getElementById('open-calendar-window-btn');
             if (calendarButton) {
                 calendarButton.onclick = () => window.openCalendarWindow();
+            }
+            const holidayWorkToggleBtn = document.getElementById('holiday-work-toggle-btn');
+            if (holidayWorkToggleBtn) {
+                holidayWorkToggleBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.toggleHolidayWorkMenu();
+                };
+            }
+            const holidayWorkAdminBtn = document.getElementById('holiday-work-admin-btn');
+            if (holidayWorkAdminBtn) {
+                holidayWorkAdminBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.openHolidayWorkPage('admin');
+                };
+            }
+            const holidayWorkPersonalBtn = document.getElementById('holiday-work-personal-btn');
+            if (holidayWorkPersonalBtn) {
+                holidayWorkPersonalBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.openHolidayWorkPage('personal');
+                };
+            }
+            const preDepartureCheckToggleBtn = document.getElementById('pre-departure-check-toggle-btn');
+            if (preDepartureCheckToggleBtn) {
+                preDepartureCheckToggleBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.togglePreDepartureCheckMenu();
+                };
+            }
+            const preDepartureCheckJindoBtn = document.getElementById('pre-departure-check-jindo-btn');
+            if (preDepartureCheckJindoBtn) {
+                preDepartureCheckJindoBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.openPreDepartureCheckPage('jindo');
+                };
+            }
+            const preDepartureCheckNamgangBtn = document.getElementById('pre-departure-check-namgang-btn');
+            if (preDepartureCheckNamgangBtn) {
+                preDepartureCheckNamgangBtn.onclick = (event) => {
+                    event.stopPropagation();
+                    window.openPreDepartureCheckPage('namgang');
+                };
             }
             const serverPasswordBtn = document.getElementById('open-server-password-btn');
             if (serverPasswordBtn) {
