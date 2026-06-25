@@ -23,6 +23,7 @@ let TEAM_SERVERS = []; // 로드된 팀 목록을 저장할 변수
 let DEFAULT_APP_ID = INITIAL_TEAM_SERVERS[0].appId; // 초기 기본 ID
 let CURRENT_APP_ID = DEFAULT_APP_ID; // 현재 선택된 서버 ID (라디오 표시용)
 let ADMIN_SETTINGS = { passwordSalt: '', passwordHash: '' };
+let MAIN_WINDOW = null;
 
 
 // ===============================================================
@@ -345,6 +346,20 @@ function setupIpcListeners() {
 
     ipcMain.on('get-app-version', (event) => {
         event.returnValue = app.getVersion();
+    });
+
+    ipcMain.on('window-minimize', (event) => {
+        const windowRef = BrowserWindow.fromWebContents(event.sender) || MAIN_WINDOW;
+        if (windowRef && !windowRef.isDestroyed()) {
+            windowRef.minimize();
+        }
+    });
+
+    ipcMain.on('window-close', (event) => {
+        const windowRef = BrowserWindow.fromWebContents(event.sender) || MAIN_WINDOW;
+        if (windowRef && !windowRef.isDestroyed()) {
+            windowRef.close();
+        }
     });
 
     ipcMain.handle('get-team-list', () => TEAM_SERVERS);
