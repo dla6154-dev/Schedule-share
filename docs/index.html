@@ -97,7 +97,7 @@
             cursor: row-resize;
         }
         .cell-selected {
-            background-color: #c7d2fe;
+            box-shadow: inset 0 0 0 2px #6366f1;
         }
     </style>
 </head>
@@ -233,7 +233,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.0";
+        let APP_VERSION = "1.7.1";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -377,8 +377,53 @@
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
 
+        const DEFAULT_TABLE_CELL_COLOR = '';
+
+        const normalizeHexColor = (value) => {
+            if (typeof value !== 'string') return DEFAULT_TABLE_CELL_COLOR;
+            const trimmed = value.trim();
+            if (!trimmed) return DEFAULT_TABLE_CELL_COLOR;
+            return /^#([0-9a-fA-F]{6})$/.test(trimmed) ? trimmed.toUpperCase() : DEFAULT_TABLE_CELL_COLOR;
+        };
+
+        const createTableCell = (rawCell = '') => {
+            if (rawCell && typeof rawCell === 'object' && !Array.isArray(rawCell)) {
+                const valueSource = Object.prototype.hasOwnProperty.call(rawCell, 'value')
+                    ? rawCell.value
+                    : Object.prototype.hasOwnProperty.call(rawCell, 'text')
+                        ? rawCell.text
+                        : rawCell.content;
+                const rowSpan = Math.max(1, Math.floor(Number(rawCell.rowSpan) || 1));
+                const colSpan = Math.max(1, Math.floor(Number(rawCell.colSpan) || 1));
+                const mergeParentRow = Number.isFinite(Number(rawCell.mergeParentRow))
+                    ? Math.max(0, Math.floor(Number(rawCell.mergeParentRow)))
+                    : null;
+                const mergeParentCol = Number.isFinite(Number(rawCell.mergeParentCol))
+                    ? Math.max(0, Math.floor(Number(rawCell.mergeParentCol)))
+                    : null;
+                return {
+                    value: String(valueSource ?? ''),
+                    bgColor: normalizeHexColor(rawCell.bgColor ?? rawCell.backgroundColor ?? ''),
+                    rowSpan,
+                    colSpan,
+                    hidden: Boolean(rawCell.hidden),
+                    mergeParentRow,
+                    mergeParentCol
+                };
+            }
+            return {
+                value: String(rawCell ?? ''),
+                bgColor: DEFAULT_TABLE_CELL_COLOR,
+                rowSpan: 1,
+                colSpan: 1,
+                hidden: false,
+                mergeParentRow: null,
+                mergeParentCol: null
+            };
+        };
+
         const createEmptyTableData = (rows, cols) => (
-            Array.from({ length: rows }, () => Array.from({ length: cols }, () => ''))
+            Array.from({ length: rows }, () => Array.from({ length: cols }, () => createTableCell('')))
         );
 
         const normalizeTableData = (rawData) => {
@@ -389,16 +434,46 @@
                 DEFAULT_TABLE_COLS,
                 ...rawData.map(row => Array.isArray(row) ? row.length : 0)
             );
-            const rows = Math.max(DEFAULT_TABLE_ROWS, rawData.length);
+            const rowCount = Math.max(DEFAULT_TABLE_ROWS, rawData.length);
             const normalized = [];
-            for (let r = 0; r < rows; r++) {
+
+            for (let r = 0; r < rowCount; r += 1) {
                 const sourceRow = Array.isArray(rawData[r]) ? rawData[r] : [];
                 const row = [];
-                for (let c = 0; c < maxCols; c++) {
-                    row.push(sourceRow[c] ?? '');
+                for (let c = 0; c < maxCols; c += 1) {
+                    const cell = createTableCell(sourceRow[c]);
+                    row.push({
+                        ...cell,
+                        rowSpan: Math.max(1, Math.min(cell.rowSpan, rowCount - r)),
+                        colSpan: Math.max(1, Math.min(cell.colSpan, maxCols - c)),
+                        hidden: false,
+                        mergeParentRow: null,
+                        mergeParentCol: null
+                    });
                 }
                 normalized.push(row);
             }
+
+            for (let r = 0; r < rowCount; r += 1) {
+                for (let c = 0; c < maxCols; c += 1) {
+                    const cell = normalized[r][c];
+                    if (cell.hidden || (cell.rowSpan === 1 && cell.colSpan === 1)) continue;
+                    for (let rr = r; rr < r + cell.rowSpan; rr += 1) {
+                        for (let cc = c; cc < c + cell.colSpan; cc += 1) {
+                            if (rr === r && cc === c) continue;
+                            normalized[rr][cc] = {
+                                ...normalized[rr][cc],
+                                rowSpan: 1,
+                                colSpan: 1,
+                                hidden: true,
+                                mergeParentRow: r,
+                                mergeParentCol: c
+                            };
+                        }
+                    }
+                }
+            }
+
             return normalized;
         };
 
@@ -444,9 +519,86 @@
             return null;
         };
 
+        const serializeTableCell = (cell) => {
+            const normalized = createTableCell(cell);
+            const payload = { value: normalized.value };
+            if (normalized.bgColor) payload.bgColor = normalized.bgColor;
+            if (normalized.rowSpan > 1) payload.rowSpan = normalized.rowSpan;
+            if (normalized.colSpan > 1) payload.colSpan = normalized.colSpan;
+            const isPlainValueOnly = !payload.bgColor && !payload.rowSpan && !payload.colSpan;
+            return isPlainValueOnly ? normalized.value : payload;
+        };
+
         const serializeTableRows = (tableData) => (
-            normalizeTableData(tableData).map(row => ({ cells: row.map(cell => String(cell ?? '')) }))
+            normalizeTableData(tableData).map(row => ({ cells: row.map(cell => serializeTableCell(cell)) }))
         );
+
+        const getTableCellSpanWidth = (columnWidths, colIndex, colSpan = 1) => (
+            columnWidths.slice(colIndex, colIndex + colSpan).reduce((sum, width) => sum + width, 0)
+        );
+
+        const getTableCellSpanHeight = (rowHeights, rowIndex, rowSpan = 1) => (
+            rowHeights.slice(rowIndex, rowIndex + rowSpan).reduce((sum, height) => sum + height, 0)
+        );
+
+        const resolveTableCell = (tableData, rowIndex, colIndex) => {
+            if (!Array.isArray(tableData) || !tableData[rowIndex] || !tableData[rowIndex][colIndex]) return null;
+            const cell = tableData[rowIndex][colIndex];
+            if (cell.hidden && Number.isInteger(cell.mergeParentRow) && Number.isInteger(cell.mergeParentCol)) {
+                const anchorRow = cell.mergeParentRow;
+                const anchorCol = cell.mergeParentCol;
+                const anchorCell = tableData[anchorRow]?.[anchorCol];
+                if (anchorCell) {
+                    return { row: anchorRow, col: anchorCol, cell: anchorCell };
+                }
+            }
+            return { row: rowIndex, col: colIndex, cell };
+        };
+
+        const getTableRangeFromSelectionOrActive = (tableData) => {
+            const selection = normalizeSelection(tableSelection);
+            if (selection) return selection;
+            const resolved = resolveTableCell(tableData, tableActiveCell.row, tableActiveCell.col);
+            if (!resolved) return null;
+            return {
+                startRow: resolved.row,
+                endRow: resolved.row,
+                startCol: resolved.col,
+                endCol: resolved.col
+            };
+        };
+
+        const getTableAnchorKeysInRange = (tableData, range) => {
+            if (!range) return [];
+            const anchors = new Map();
+            for (let r = range.startRow; r <= range.endRow; r += 1) {
+                for (let c = range.startCol; c <= range.endCol; c += 1) {
+                    const resolved = resolveTableCell(tableData, r, c);
+                    if (!resolved) continue;
+                    anchors.set(`${resolved.row}:${resolved.col}`, { row: resolved.row, col: resolved.col });
+                }
+            }
+            return Array.from(anchors.values());
+        };
+
+        const unmergeTableAnchors = (tableData, anchors) => {
+            const nextData = normalizeTableData(tableData);
+            anchors.forEach(({ row, col }) => {
+                if (nextData[row]?.[col]) {
+                    nextData[row][col].rowSpan = 1;
+                    nextData[row][col].colSpan = 1;
+                }
+            });
+            return normalizeTableData(nextData);
+        };
+
+        const unmergeTouchedTableRange = (tableData, range) => {
+            const anchors = getTableAnchorKeysInRange(tableData, range).filter(({ row, col }) => {
+                const cell = tableData[row]?.[col];
+                return cell && (cell.rowSpan > 1 || cell.colSpan > 1);
+            });
+            return anchors.length ? unmergeTableAnchors(tableData, anchors) : normalizeTableData(tableData);
+        };
 
         const escapeCsvValue = (value) => {
             const stringValue = String(value ?? '');
@@ -456,6 +608,187 @@
             return stringValue;
         };
 
+        const getTableToneClasses = (rowIndex, colIndex, variant) => {
+            if (variant === 'popup') {
+                if (rowIndex === 0 && colIndex === 0) return 'cell-corner';
+                if (rowIndex === 0) return 'cell-header';
+                if (colIndex === 0) return 'cell-side';
+                return '';
+            }
+            if (rowIndex === 0 && colIndex === 0) return 'bg-amber-200';
+            if (rowIndex === 0) return 'bg-amber-50';
+            if (colIndex === 0) return 'bg-amber-100';
+            return '';
+        };
+
+        const buildTableRowsHtml = (tableData, columnWidths, rowHeights, variant) => (
+            tableData.map((row, rowIndex) => {
+                const cellsHtml = row.map((cell, colIndex) => {
+                    if (cell.hidden) return '';
+                    const rowSpan = Math.max(1, cell.rowSpan || 1);
+                    const colSpan = Math.max(1, cell.colSpan || 1);
+                    const width = getTableCellSpanWidth(columnWidths, colIndex, colSpan);
+                    const height = getTableCellSpanHeight(rowHeights, rowIndex, rowSpan);
+                    const toneClass = getTableToneClasses(rowIndex, colIndex, variant);
+                    const cellClasses = variant === 'popup'
+                        ? `cell ${toneClass}`.trim()
+                        : `border border-gray-200 p-0 relative ${toneClass}`.trim();
+                    const textareaClasses = variant === 'popup'
+                        ? ''
+                        : 'w-full px-2 py-1 text-xs bg-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none';
+                    const spanAttributes = [
+                        rowSpan > 1 ? `rowspan="${rowSpan}"` : '',
+                        colSpan > 1 ? `colspan="${colSpan}"` : ''
+                    ].filter(Boolean).join(' ');
+                    const backgroundStyle = cell.bgColor ? `background-color: ${cell.bgColor};` : '';
+                    return `
+                        <td
+                            class="${cellClasses}"
+                            data-row="${rowIndex}"
+                            data-col="${colIndex}"
+                            data-end-row="${rowIndex + rowSpan - 1}"
+                            data-end-col="${colIndex + colSpan - 1}"
+                            ${spanAttributes}
+                            style="${backgroundStyle}"
+                        >
+                            <textarea
+                                data-row="${rowIndex}"
+                                data-col="${colIndex}"
+                                style="width: ${width}px; min-width: ${width}px; height: ${height}px;"
+                                class="${textareaClasses}"
+                            >${escapeHtml(cell.value)}</textarea>
+                            ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
+                            ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
+                        </td>
+                    `;
+                }).join('');
+                return `<tr>${cellsHtml}</tr>`;
+            }).join('')
+        );
+
+        const getTablePickerColor = (tableData) => {
+            const range = getTableRangeFromSelectionOrActive(tableData);
+            if (!range) return '';
+            const resolved = resolveTableCell(tableData, range.startRow, range.startCol);
+            return resolved?.cell?.bgColor || '';
+        };
+
+        const TABLE_THEME_COLOR_COLUMNS = [
+            ['#FFFFFF', '#F2F2F2', '#D9D9D9', '#BFBFBF', '#A6A6A6', '#7F7F7F'],
+            ['#000000', '#7F7F7F', '#595959', '#3F3F3F', '#262626', '#0D0D0D'],
+            ['#E7E6E6', '#D0CECE', '#AEAAAA', '#948F8F', '#756F6F', '#4A4646'],
+            ['#44546A', '#D6DCE4', '#ADB9CA', '#8496B0', '#5B6B82', '#2F3B4C'],
+            ['#4472C4', '#D9E2F3', '#B4C6E7', '#8FAADC', '#4472C4', '#2F5597'],
+            ['#ED7D31', '#FBE5D6', '#F7CAAC', '#F4B084', '#ED7D31', '#C55A11'],
+            ['#A5A5A5', '#EDEDED', '#D9D9D9', '#BFBFBF', '#7F7F7F', '#595959'],
+            ['#FFC000', '#FFF2CC', '#FFE699', '#FFD966', '#BF9000', '#7F6000'],
+            ['#5B9BD5', '#DDEBF7', '#BDD7EE', '#9CC2E5', '#2E75B6', '#1F4E79'],
+            ['#70AD47', '#E2F0D9', '#C6E0B4', '#A8D08D', '#548235', '#375623']
+        ];
+
+        const TABLE_STANDARD_COLORS = [
+            '#C00000', '#FF0000', '#FFC000', '#FFFF00', '#92D050',
+            '#00B050', '#00B0F0', '#0070C0', '#002060', '#7030A0'
+        ];
+
+        const buildTableColorSwatchStyle = (color, isSelected) => {
+            const ring = isSelected
+                ? 'box-shadow: inset 0 0 0 2px #ffffff, 0 0 0 2px #4f46e5;'
+                : 'box-shadow: inset 0 0 0 1px rgba(15,23,42,0.12);';
+            return `width: 28px; height: 28px; border: none; border-radius: 4px; cursor: pointer; background: ${color}; ${ring}`;
+        };
+
+        const buildTableColorPaletteHtml = (prefix, selectedColor) => {
+            const autoSelected = !selectedColor;
+            const themeColumnsHtml = TABLE_THEME_COLOR_COLUMNS.map(column => `
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    ${column.map(color => `
+                        <button
+                            type="button"
+                            data-table-palette-color="${color}"
+                            title="${color}"
+                            style="${buildTableColorSwatchStyle(color, selectedColor === color)}"
+                        ></button>
+                    `).join('')}
+                </div>
+            `).join('');
+
+            const standardColorsHtml = TABLE_STANDARD_COLORS.map(color => `
+                <button
+                    type="button"
+                    data-table-palette-color="${color}"
+                    title="${color}"
+                    style="${buildTableColorSwatchStyle(color, selectedColor === color)}"
+                ></button>
+            `).join('');
+
+            const autoButtonStyle = autoSelected
+                ? 'border: 1px solid #4f46e5; box-shadow: 0 0 0 1px #4f46e5 inset;'
+                : 'border: 1px solid #d1d5db;';
+
+            return `
+                <div style="position: relative;">
+                    <button
+                        type="button"
+                        id="${prefix}-color-toggle"
+                        style="display:inline-flex; align-items:center; gap:8px; height:32px; padding:0 10px; border:1px solid #d1d5db; border-radius:8px; background:#ffffff; color:#374151; font-size:12px; font-weight:600; cursor:pointer;"
+                        title="색상표 열기"
+                    >
+                        <span style="width:16px; height:16px; border-radius:4px; border:1px solid #d1d5db; background:${selectedColor || 'linear-gradient(135deg, #ffffff 0%, #ffffff 48%, #ef4444 48%, #ef4444 52%, #ffffff 52%, #ffffff 100%)'};"></span>
+                        색상표
+                    </button>
+                    <div
+                        id="${prefix}-color-palette"
+                        style="display:none; position:absolute; top:calc(100% + 8px); left:0; z-index:40; width:max-content; max-width:360px; padding:12px; border:1px solid #d1d5db; border-radius:12px; background:#ffffff; box-shadow:0 20px 45px rgba(15,23,42,0.18);"
+                    >
+                        <button
+                            type="button"
+                            data-table-palette-color=""
+                            style="display:flex; align-items:center; gap:10px; width:100%; margin-bottom:12px; padding:6px 8px; border-radius:8px; background:#ffffff; color:#111827; font-size:12px; font-weight:600; cursor:pointer; text-align:left; ${autoButtonStyle}"
+                            title="자동"
+                        >
+                            <span style="display:inline-block; width:20px; height:20px; border:1px solid #111827; background:linear-gradient(135deg, #ffffff 0%, #ffffff 48%, #ef4444 48%, #ef4444 52%, #ffffff 52%, #ffffff 100%);"></span>
+                            자동
+                        </button>
+                        <div style="font-size:12px; font-weight:700; color:#374151; margin-bottom:6px;">테마 색</div>
+                        <div style="display:flex; gap:6px; margin-bottom:14px;">${themeColumnsHtml}</div>
+                        <div style="font-size:12px; font-weight:700; color:#374151; margin-bottom:6px;">표준 색</div>
+                        <div style="display:grid; grid-template-columns:repeat(10, 28px); gap:6px;">${standardColorsHtml}</div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const bindTableColorPalette = (targetDoc, prefix) => {
+            const toggleButton = targetDoc.getElementById(`${prefix}-color-toggle`);
+            const palette = targetDoc.getElementById(`${prefix}-color-palette`);
+            if (!toggleButton || !palette) return;
+
+            toggleButton.onclick = (event) => {
+                event.stopPropagation();
+                palette.style.display = palette.style.display === 'block' ? 'none' : 'block';
+            };
+
+            palette.querySelectorAll('[data-table-palette-color]').forEach((button) => {
+                button.onclick = (event) => {
+                    event.stopPropagation();
+                    const { tablePaletteColor } = button.dataset;
+                    if (tablePaletteColor) {
+                        window.applyTableCellColor(tablePaletteColor);
+                    } else {
+                        window.clearTableCellColor();
+                    }
+                    palette.style.display = 'none';
+                };
+            });
+
+            targetDoc.addEventListener('click', (event) => {
+                if (!(event.target instanceof targetDoc.defaultView.Element)) return;
+                if (event.target.closest(`#${prefix}-color-palette`) || event.target.closest(`#${prefix}-color-toggle`)) return;
+                palette.style.display = 'none';
+            });
+        };
+
         const renderTableWindow = () => {
             if (!tableWindowRef || tableWindowRef.closed) return;
             if (!state.tableEditTaskId || !state.tableEditData) return;
@@ -463,22 +796,7 @@
             const tableData = normalizeTableData(state.tableEditData);
             const columnWidths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
             const rowHeights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
-
-            const rowsHtml = tableData.map((row, rowIndex) => `
-                <tr>
-                    ${row.map((cell, colIndex) => `
-                        <td class="cell ${rowIndex === 0 && colIndex === 0 ? 'cell-corner' : rowIndex === 0 ? 'cell-header' : colIndex === 0 ? 'cell-side' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
-                            <textarea
-                                data-row="${rowIndex}"
-                                data-col="${colIndex}"
-                                style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
-                            >${escapeHtml(cell)}</textarea>
-                            ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
-                            ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
-                        </td>
-                    `).join('')}
-                </tr>
-            `).join('');
+            const rowsHtml = buildTableRowsHtml(tableData, columnWidths, rowHeights, 'popup');
 
             const doc = tableWindowRef.document;
             doc.title = '표 편집';
@@ -502,7 +820,7 @@
                     .table-wrap { flex: 1; overflow: auto; padding: 12px 14px 18px; }
                     table { border-collapse: collapse; width: max-content; background: #fff; }
                     td.cell { border: 1px solid #e5e7eb; padding: 0; background: #fff; position: relative; }
-                    td.cell.cell-selected { background: #c7d2fe; }
+                    td.cell.cell-selected { box-shadow: inset 0 0 0 2px #6366f1; }
                     td.cell-header { background: #fef3c7; }
                     td.cell-side { background: #fde68a; }
                     td.cell-corner { background: #fbbf24; }
@@ -527,6 +845,9 @@
                             <button id="tw-add-col" class="btn-indigo">열 추가</button>
                             <button id="tw-remove-row" class="btn-indigo">행 제거</button>
                             <button id="tw-remove-col" class="btn-indigo">열 제거</button>
+                            <button id="tw-merge" class="btn-indigo">셀 병합</button>
+                            <button id="tw-unmerge" class="btn-indigo">병합 해제</button>
+                            ${buildTableColorPaletteHtml('tw', getTablePickerColor(tableData))}
                             <button id="tw-save" class="btn-save" title="표 저장">
                                 ${createIcon('Save', 'w-4 h-4')}
                                 저장
@@ -535,7 +856,7 @@
                         </div>
                         <button id="tw-close" class="btn-close">닫기</button>
                     </div>
-                    <div class="hint">열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다. 셀을 수정하면 자동 저장됩니다.</div>
+                    <div class="hint">드래그로 여러 셀을 선택한 뒤 병합/색 적용이 가능합니다. 열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다.</div>
                     <div class="table-wrap">
                         <table>
                             <tbody>
@@ -550,6 +871,9 @@
             doc.getElementById('tw-add-col').onclick = () => window.handleTableAddColumn();
             doc.getElementById('tw-remove-row').onclick = () => window.removeSelectedRows();
             doc.getElementById('tw-remove-col').onclick = () => window.removeSelectedColumns();
+            doc.getElementById('tw-merge').onclick = () => window.mergeSelectedTableCells();
+            doc.getElementById('tw-unmerge').onclick = () => window.unmergeSelectedTableCells();
+            bindTableColorPalette(doc, 'tw');
             doc.getElementById('tw-save').onclick = () => window.saveTableChanges(false);
             doc.getElementById('tw-export').onclick = () => window.exportTableToExcel();
             doc.getElementById('tw-close').onclick = () => tableWindowRef?.close();
@@ -666,14 +990,16 @@
         const focusTableCell = (rowIndex, colIndex, shouldSelect = true) => {
             const targetDoc = tableWindowRef && !tableWindowRef.closed ? tableWindowRef.document : document;
             const containerId = tableWindowRef && !tableWindowRef.closed ? '#table-window' : '#table-modal';
-            const selector = `${containerId} textarea[data-row="${rowIndex}"][data-col="${colIndex}"]`;
+            const resolved = resolveTableCell(normalizeTableData(state.tableEditData), rowIndex, colIndex);
+            if (!resolved) return false;
+            const selector = `${containerId} textarea[data-row="${resolved.row}"][data-col="${resolved.col}"]`;
             const input = targetDoc.querySelector(selector);
             if (input) {
                 input.focus();
                 if (shouldSelect) {
                     input.select();
                 } else {
-                    const caretKey = `${rowIndex}:${colIndex}`;
+                    const caretKey = `${resolved.row}:${resolved.col}`;
                     const caret = tableCaretMap.get(caretKey);
                     if (caret && typeof input.setSelectionRange === 'function') {
                         input.setSelectionRange(caret.start, caret.end);
@@ -699,18 +1025,57 @@
             return normalized.startRow !== normalized.endRow || normalized.startCol !== normalized.endCol;
         };
 
+        const tableCellOverlapsSelection = (cellElement, selection) => {
+            const cellStartRow = Number(cellElement.dataset.row);
+            const cellStartCol = Number(cellElement.dataset.col);
+            const cellEndRow = Number(cellElement.dataset.endRow ?? cellStartRow);
+            const cellEndCol = Number(cellElement.dataset.endCol ?? cellStartCol);
+            return !(
+                cellEndRow < selection.startRow ||
+                cellStartRow > selection.endRow ||
+                cellEndCol < selection.startCol ||
+                cellStartCol > selection.endCol
+            );
+        };
+
+        const findTableCellInDirection = (tableData, rowIndex, colIndex, key) => {
+            const origin = resolveTableCell(tableData, rowIndex, colIndex);
+            if (!origin) return null;
+            let nextRow = origin.row;
+            let nextCol = origin.col;
+
+            if (key === 'ArrowUp') nextRow = origin.row - 1;
+            if (key === 'ArrowDown') nextRow = origin.row + origin.cell.rowSpan;
+            if (key === 'ArrowLeft') nextCol = origin.col - 1;
+            if (key === 'ArrowRight') nextCol = origin.col + origin.cell.colSpan;
+
+            while (nextRow >= 0 && nextCol >= 0) {
+                if (nextRow >= tableData.length || nextCol >= tableData[0].length) {
+                    return { row: nextRow, col: nextCol, outside: true };
+                }
+                const resolved = resolveTableCell(tableData, nextRow, nextCol);
+                if (resolved) {
+                    return { row: resolved.row, col: resolved.col, outside: false };
+                }
+                if (key === 'ArrowUp') nextRow -= 1;
+                if (key === 'ArrowDown') nextRow += 1;
+                if (key === 'ArrowLeft') nextCol -= 1;
+                if (key === 'ArrowRight') nextCol += 1;
+            }
+            return null;
+        };
+
         const applySelectionHighlight = (targetDoc, containerSelector) => {
             targetDoc.querySelectorAll(`${containerSelector} td[data-row]`).forEach(cell => {
                 cell.classList.remove('cell-selected');
             });
             const selection = normalizeSelection(tableSelection);
             if (!selection) return;
-            for (let r = selection.startRow; r <= selection.endRow; r += 1) {
-                for (let c = selection.startCol; c <= selection.endCol; c += 1) {
-                    const cell = targetDoc.querySelector(`${containerSelector} td[data-row="${r}"][data-col="${c}"]`);
-                    if (cell) cell.classList.add('cell-selected');
+            targetDoc.querySelectorAll(`${containerSelector} td[data-row]`).forEach(cell => {
+                if (tableCellOverlapsSelection(cell, selection)) {
+                    cell.classList.add('cell-selected');
                 }
-            }
+            });
         };
 
         const setTableSelection = (selection, targetDoc, containerSelector) => {
@@ -1149,6 +1514,7 @@
             const columnWidths = normalizeColumnWidths(tableData[0].length, targetTask.table?.columnWidths);
             const rowHeights = normalizeRowHeights(tableData.length, targetTask.table?.rowHeights);
             tableActiveCell = { row: 0, col: 0 };
+            tableSelection = null;
             setState({
                 isTableModalOpen: true,
                 tableEditTaskId: taskId,
@@ -1169,6 +1535,7 @@
             const columnWidths = normalizeColumnWidths(tableData[0].length, targetTask.table?.columnWidths);
             const rowHeights = normalizeRowHeights(tableData.length, targetTask.table?.rowHeights);
             tableActiveCell = { row: 0, col: 0 };
+            tableSelection = null;
             setState({
                 isTableModalOpen: false,
                 tableEditTaskId: taskId,
@@ -1199,6 +1566,7 @@
                 clearTimeout(tableAutosaveTimer);
                 tableAutosaveTimer = null;
             }
+            tableSelection = null;
             setState({
                 isTableModalOpen: false,
                 tableEditTaskId: null,
@@ -1219,8 +1587,11 @@
         };
 
         window.handleTableCellInput = (rowIndex, colIndex, value) => {
-            if (!state.tableEditData || !state.tableEditData[rowIndex]) return;
-            state.tableEditData[rowIndex][colIndex] = value;
+            const tableData = normalizeTableData(state.tableEditData);
+            const resolved = resolveTableCell(tableData, rowIndex, colIndex);
+            if (!resolved) return;
+            tableData[resolved.row][resolved.col].value = value;
+            state.tableEditData = tableData;
             state.tableEditIsDirty = true;
             scheduleTableAutosave();
         };
@@ -1228,7 +1599,7 @@
         window.handleTableAddRow = () => {
             const currentData = normalizeTableData(state.tableEditData);
             const colCount = currentData[0].length;
-            currentData.push(Array.from({ length: colCount }, () => ''));
+            currentData.push(Array.from({ length: colCount }, () => createTableCell('')));
             const currentRowHeights = normalizeRowHeights(currentData.length - 1, state.tableEditRowHeights);
             currentRowHeights.push(DEFAULT_TABLE_ROW_HEIGHT);
             setState({
@@ -1241,7 +1612,7 @@
 
         window.handleTableAddColumn = () => {
             const currentData = normalizeTableData(state.tableEditData);
-            currentData.forEach(row => row.push(''));
+            currentData.forEach(row => row.push(createTableCell('')));
             const currentColumnWidths = normalizeColumnWidths(currentData[0].length - 1, state.tableEditColumnWidths);
             currentColumnWidths.push(DEFAULT_TABLE_COL_WIDTH);
             setState({
@@ -1254,40 +1625,36 @@
 
         window.handleTableEnterKey = (rowIndex, colIndex) => {
             const tableData = normalizeTableData(state.tableEditData);
-            const nextRowIndex = rowIndex + 1;
+            const resolved = resolveTableCell(tableData, rowIndex, colIndex);
+            if (!resolved) return;
+            const nextRowIndex = resolved.row + resolved.cell.rowSpan;
             if (nextRowIndex >= tableData.length) {
-                tablePendingFocus = { row: nextRowIndex, col: colIndex };
+                tablePendingFocus = { row: nextRowIndex, col: resolved.col };
                 window.handleTableAddRow();
                 return;
             }
-            if (!focusTableCell(nextRowIndex, colIndex)) {
-                tablePendingFocus = { row: nextRowIndex, col: colIndex };
+            if (!focusTableCell(nextRowIndex, resolved.col)) {
+                tablePendingFocus = { row: nextRowIndex, col: resolved.col };
             }
         };
 
         window.handleTableArrowKey = (rowIndex, colIndex, key) => {
             const tableData = normalizeTableData(state.tableEditData);
-            const maxRow = tableData.length - 1;
-            const maxCol = tableData[0].length - 1;
-            let nextRow = rowIndex;
-            let nextCol = colIndex;
+            const nextTarget = findTableCellInDirection(tableData, rowIndex, colIndex, key);
+            if (!nextTarget) return;
 
-            if (key === 'ArrowUp') nextRow = Math.max(0, rowIndex - 1);
-            if (key === 'ArrowDown') nextRow = rowIndex + 1;
-            if (key === 'ArrowLeft') nextCol = Math.max(0, colIndex - 1);
-            if (key === 'ArrowRight') nextCol = colIndex + 1;
-
-            if (key === 'ArrowDown' && nextRow > maxRow) {
-                tablePendingFocus = { row: nextRow, col: nextCol };
+            if (key === 'ArrowDown' && nextTarget.outside) {
+                tablePendingFocus = { row: nextTarget.row, col: nextTarget.col };
                 window.handleTableAddRow();
                 return;
             }
-            if (key === 'ArrowRight' && nextCol > maxCol) {
-                tablePendingFocus = { row: nextRow, col: nextCol };
+            if (key === 'ArrowRight' && nextTarget.outside) {
+                tablePendingFocus = { row: nextTarget.row, col: nextTarget.col };
                 window.handleTableAddColumn();
                 return;
             }
-            focusTableCell(nextRow, nextCol);
+            if (nextTarget.outside) return;
+            focusTableCell(nextTarget.row, nextTarget.col);
             tableSelection = null;
             if (tableWindowRef && !tableWindowRef.closed) {
                 applySelectionHighlight(tableWindowRef.document, '#table-window');
@@ -1306,22 +1673,32 @@
             const pasteColCount = Math.max(...pastedRows.map(row => row.length));
 
             const tableData = normalizeTableData(state.tableEditData);
+            const startCell = resolveTableCell(tableData, startRow, startCol) || { row: startRow, col: startCol };
+            startRow = startCell.row;
+            startCol = startCell.col;
             const targetRowCount = Math.max(tableData.length, startRow + pasteRowCount);
             const targetColCount = Math.max(tableData[0].length, startCol + pasteColCount);
 
             const nextData = normalizeTableData(tableData);
             while (nextData.length < targetRowCount) {
-                nextData.push(Array.from({ length: nextData[0].length }, () => ''));
+                nextData.push(Array.from({ length: nextData[0].length }, () => createTableCell('')));
             }
             nextData.forEach(row => {
                 while (row.length < targetColCount) {
-                    row.push('');
+                    row.push(createTableCell(''));
                 }
+            });
+
+            const clearedMergeData = unmergeTouchedTableRange(nextData, {
+                startRow,
+                endRow: startRow + pasteRowCount - 1,
+                startCol,
+                endCol: startCol + pasteColCount - 1
             });
 
             for (let r = 0; r < pasteRowCount; r += 1) {
                 for (let c = 0; c < pastedRows[r].length; c += 1) {
-                    nextData[startRow + r][startCol + c] = pastedRows[r][c];
+                    clearedMergeData[startRow + r][startCol + c].value = pastedRows[r][c];
                 }
             }
 
@@ -1334,7 +1711,7 @@
             };
 
             setState({
-                tableEditData: nextData,
+                tableEditData: clearedMergeData,
                 tableEditColumnWidths: nextColumnWidths,
                 tableEditRowHeights: nextRowHeights,
                 tableEditIsDirty: true
@@ -1381,23 +1758,32 @@
         };
 
         window.handleTableDeleteSelection = () => {
-            const selection = normalizeSelection(tableSelection);
-            if (!selection) return false;
             const tableData = normalizeTableData(state.tableEditData);
+            const selection = getTableRangeFromSelectionOrActive(tableData);
+            if (!selection) return false;
+            const nextData = unmergeTouchedTableRange(tableData, selection);
             for (let r = selection.startRow; r <= selection.endRow; r += 1) {
                 for (let c = selection.startCol; c <= selection.endCol; c += 1) {
-                    if (tableData[r] && typeof tableData[r][c] !== 'undefined') {
-                        tableData[r][c] = '';
+                    if (nextData[r] && nextData[r][c]) {
+                        nextData[r][c].value = '';
                     }
                 }
             }
-            setState({ tableEditData: tableData, tableEditIsDirty: true });
+            setState({ tableEditData: nextData, tableEditIsDirty: true });
             scheduleTableAutosave();
             return true;
         };
 
         window.removeSelectedColumns = () => {
-            const tableData = normalizeTableData(state.tableEditData);
+            const tableData = unmergeTouchedTableRange(
+                normalizeTableData(state.tableEditData),
+                {
+                    startRow: 0,
+                    endRow: normalizeTableData(state.tableEditData).length - 1,
+                    startCol: 0,
+                    endCol: normalizeTableData(state.tableEditData)[0].length - 1
+                }
+            );
             if (!tableData.length) return false;
             const colCount = tableData[0].length;
             const selection = normalizeSelection(tableSelection) || {
@@ -1427,7 +1813,15 @@
         };
 
         window.removeSelectedRows = () => {
-            const tableData = normalizeTableData(state.tableEditData);
+            const tableData = unmergeTouchedTableRange(
+                normalizeTableData(state.tableEditData),
+                {
+                    startRow: 0,
+                    endRow: normalizeTableData(state.tableEditData).length - 1,
+                    startCol: 0,
+                    endCol: normalizeTableData(state.tableEditData)[0].length - 1
+                }
+            );
             if (!tableData.length) return false;
             const rowCount = tableData.length;
             const selection = normalizeSelection(tableSelection) || {
@@ -1466,6 +1860,85 @@
             setState({ tableEditRowHeights: heights, tableEditIsDirty: true });
             scheduleTableAutosave();
         };
+
+        window.mergeSelectedTableCells = () => {
+            const selection = normalizeSelection(tableSelection);
+            if (!selection || !isMultiCellSelection(selection)) {
+                setState({ statusMessage: '병합할 셀 범위를 먼저 선택해주세요.' });
+                return false;
+            }
+            const tableData = normalizeTableData(state.tableEditData);
+            for (let r = selection.startRow; r <= selection.endRow; r += 1) {
+                for (let c = selection.startCol; c <= selection.endCol; c += 1) {
+                    const resolved = resolveTableCell(tableData, r, c);
+                    if (!resolved || resolved.row !== r || resolved.col !== c) {
+                        setState({ statusMessage: '이미 병합된 셀이 포함되어 있어 다시 병합할 수 없습니다.' });
+                        return false;
+                    }
+                    const cell = resolved.cell;
+                    if (cell.rowSpan > 1 || cell.colSpan > 1) {
+                        setState({ statusMessage: '이미 병합된 셀이 포함되어 있어 다시 병합할 수 없습니다.' });
+                        return false;
+                    }
+                }
+            }
+
+            const nextData = normalizeTableData(tableData);
+            nextData[selection.startRow][selection.startCol].rowSpan = selection.endRow - selection.startRow + 1;
+            nextData[selection.startRow][selection.startCol].colSpan = selection.endCol - selection.startCol + 1;
+            tableSelection = null;
+            tableActiveCell = { row: selection.startRow, col: selection.startCol };
+            setState({
+                tableEditData: normalizeTableData(nextData),
+                tableEditIsDirty: true,
+                statusMessage: '선택한 셀을 병합했습니다.'
+            });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.unmergeSelectedTableCells = () => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const range = getTableRangeFromSelectionOrActive(tableData);
+            if (!range) return false;
+            const anchors = getTableAnchorKeysInRange(tableData, range).filter(({ row, col }) => {
+                const cell = tableData[row]?.[col];
+                return cell && (cell.rowSpan > 1 || cell.colSpan > 1);
+            });
+            if (!anchors.length) {
+                setState({ statusMessage: '병합 해제할 셀을 선택해주세요.' });
+                return false;
+            }
+            tableSelection = null;
+            setState({
+                tableEditData: unmergeTableAnchors(tableData, anchors),
+                tableEditIsDirty: true,
+                statusMessage: '병합을 해제했습니다.'
+            });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.applyTableCellColor = (color) => {
+            const tableData = normalizeTableData(state.tableEditData);
+            const range = getTableRangeFromSelectionOrActive(tableData);
+            if (!range) return false;
+            const targetColor = normalizeHexColor(color);
+            const anchors = getTableAnchorKeysInRange(tableData, range);
+            if (!anchors.length) return false;
+            anchors.forEach(({ row, col }) => {
+                tableData[row][col].bgColor = targetColor;
+            });
+            setState({
+                tableEditData: tableData,
+                tableEditIsDirty: true,
+                statusMessage: targetColor ? '셀 색상을 적용했습니다.' : '셀 색상을 제거했습니다.'
+            });
+            scheduleTableAutosave();
+            return true;
+        };
+
+        window.clearTableCellColor = () => window.applyTableCellColor('');
 
         const attachTableResizeHandlers = (targetDoc, containerSelector) => {
             targetDoc.querySelectorAll(`${containerSelector} .col-resizer`).forEach(handle => {
@@ -1556,7 +2029,9 @@
 
         window.exportTableToExcel = () => {
             const tableData = normalizeTableData(state.tableEditData);
-            const csv = tableData.map(row => row.map(escapeCsvValue).join(',')).join('\r\n');
+            const csv = tableData
+                .map(row => row.map(cell => escapeCsvValue(cell.hidden ? '' : cell.value)).join(','))
+                .join('\r\n');
             const csvWithBom = '\ufeff' + csv;
             const blob = new Blob([csvWithBom], { type: 'text/csv;charset=utf-8;' });
             const url = URL.createObjectURL(blob);
@@ -3244,22 +3719,7 @@
             const tableData = normalizeTableData(state.tableEditData);
             const columnWidths = normalizeColumnWidths(tableData[0].length, state.tableEditColumnWidths);
             const rowHeights = normalizeRowHeights(tableData.length, state.tableEditRowHeights);
-            const rowsHtml = tableData.map((row, rowIndex) => `
-                <tr>
-                    ${row.map((cell, colIndex) => `
-                        <td class="border border-gray-200 p-0 relative ${rowIndex === 0 && colIndex === 0 ? 'bg-amber-200' : rowIndex === 0 ? 'bg-amber-50' : colIndex === 0 ? 'bg-amber-100' : ''}" data-row="${rowIndex}" data-col="${colIndex}">
-                            <textarea
-                                data-row="${rowIndex}"
-                                data-col="${colIndex}"
-                                style="width: ${columnWidths[colIndex]}px; min-width: ${columnWidths[colIndex]}px; height: ${rowHeights[rowIndex]}px;"
-                                class="w-full px-2 py-1 text-xs bg-transparent focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
-                            >${escapeHtml(cell)}</textarea>
-                            ${rowIndex === 0 ? `<div class="col-resizer" data-col="${colIndex}"></div>` : ''}
-                            ${colIndex === 0 ? `<div class="row-resizer" data-row="${rowIndex}"></div>` : ''}
-                        </td>
-                    `).join('')}
-                </tr>
-            `).join('');
+            const rowsHtml = buildTableRowsHtml(tableData, columnWidths, rowHeights, 'modal');
 
             const modalHtml = `
                 <div id="table-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
@@ -3288,6 +3748,13 @@
                                     <button id="table-remove-col-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
                                         열 제거
                                     </button>
+                                    <button id="table-merge-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        셀 병합
+                                    </button>
+                                    <button id="table-unmerge-btn" class="px-3 py-1 text-xs font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">
+                                        병합 해제
+                                    </button>
+                                    ${buildTableColorPaletteHtml('table', getTablePickerColor(tableData))}
                                 </div>
                                 <div class="flex items-center space-x-2">
                                     <button id="table-save-btn" class="p-2 text-white bg-indigo-500 rounded-lg hover:bg-indigo-600" aria-label="표 저장" title="표 저장">
@@ -3298,7 +3765,7 @@
                                     </button>
                                 </div>
                             </div>
-                            <div class="text-xs text-gray-400">열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다. 셀을 수정하면 자동 저장됩니다.</div>
+                            <div class="text-xs text-gray-400">드래그로 여러 셀을 선택한 뒤 병합/색 적용이 가능합니다. 열/행 경계를 마우스로 드래그해 크기를 조절합니다. Alt+Enter로 줄바꿈을 입력할 수 있습니다.</div>
                             <div class="border border-gray-200 rounded-lg overflow-auto flex-1 min-h-[200px]">
                                 <table class="w-full border-collapse text-sm">
                                     <tbody>
@@ -3327,6 +3794,9 @@
             document.getElementById('table-add-col-btn').onclick = window.handleTableAddColumn;
             document.getElementById('table-remove-row-btn').onclick = () => window.removeSelectedRows();
             document.getElementById('table-remove-col-btn').onclick = () => window.removeSelectedColumns();
+            document.getElementById('table-merge-btn').onclick = () => window.mergeSelectedTableCells();
+            document.getElementById('table-unmerge-btn').onclick = () => window.unmergeSelectedTableCells();
+            bindTableColorPalette(document, 'table');
             document.getElementById('table-save-btn').onclick = () => window.saveTableChanges(false);
             document.getElementById('table-export-btn').onclick = window.exportTableToExcel;
 
