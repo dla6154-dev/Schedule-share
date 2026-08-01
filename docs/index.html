@@ -233,7 +233,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.1";
+        let APP_VERSION = "1.7.2";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -1480,6 +1480,27 @@
             }
             inspectionWindow.focus();
             setState({ isPreDepartureCheckMenuOpen: false });
+        };
+
+        window.openElectronicDroneFormPage = () => {
+            const electronicDroneFormWindow = window.open(
+                'https://dla6154-dev.github.io/shipinfo-system/drone-forms/',
+                'electronic-drone-form',
+                'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
+            );
+            if (!electronicDroneFormWindow) {
+                setState({
+                    isHolidayWorkMenuOpen: false,
+                    isPreDepartureCheckMenuOpen: false,
+                    statusMessage: '팝업이 차단되어 전자 드론서식 페이지를 열 수 없습니다.'
+                });
+                return;
+            }
+            electronicDroneFormWindow.focus();
+            setState({
+                isHolidayWorkMenuOpen: false,
+                isPreDepartureCheckMenuOpen: false
+            });
         };
 
         window.minimizeMainWindow = () => {
@@ -4567,6 +4588,15 @@
                                         ` : ''}
                                     </div>
                                 </div>
+                                <div class="flex flex-col pt-[118px] shrink-0">
+                                    <button
+                                        id="open-electronic-drone-form-btn"
+                                        class="w-28 whitespace-nowrap flex items-center justify-center text-xs font-semibold px-3 py-1 bg-amber-200 text-amber-950 border border-amber-300 hover:bg-amber-300 rounded-lg shadow transition duration-150"
+                                        title="전자 드론서식"
+                                    >
+                                        전자 드론서식
+                                    </button>
+                                </div>
                                 <div class="flex flex-col space-y-1">
                                     <button
                                         id="open-nickname-modal-btn"
@@ -4707,6 +4737,10 @@
                     event.stopPropagation();
                     window.openPreDepartureCheckPage('namgang');
                 };
+            }
+            const electronicDroneFormBtn = document.getElementById('open-electronic-drone-form-btn');
+            if (electronicDroneFormBtn) {
+                electronicDroneFormBtn.onclick = () => window.openElectronicDroneFormPage();
             }
             const minimizeWindowBtn = document.getElementById('minimize-window-btn');
             if (minimizeWindowBtn) {
