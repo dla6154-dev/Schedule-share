@@ -37,7 +37,8 @@
         #holiday-work-panel,
         #holiday-work-toggle-btn,
         #pre-departure-check-panel,
-        #pre-departure-check-toggle-btn {
+        #pre-departure-check-toggle-btn,
+        #open-electronic-drone-form-btn {
             width: 100%;
         }
         /* 창 드래그 가능 영역 설정 */
@@ -118,10 +119,12 @@
         
         // [IPC 통신을 위한 ipcRenderer 변수 선언]
         let ipcRenderer = null;
+        let electronShell = null;
         if (window.require) {
              try {
-                // Electron 환경에서 ipcRenderer를 가져옵니다.
-                ipcRenderer = window.require('electron').ipcRenderer;
+                const electronModule = window.require('electron');
+                ipcRenderer = electronModule.ipcRenderer;
+                electronShell = electronModule.shell || null;
             } catch (e) {
                 console.warn("Electron IPC is not available.");
             }
@@ -141,6 +144,7 @@
             jindo: 'https://vessel-inspection-app.pages.dev/#jindo',
             namgang: 'https://vessel-inspection-app.pages.dev/#namgang'
         });
+        const ELECTRONIC_DRONE_FORM_URL = 'https://dla6154-dev.github.io/shipinfo-system/drone-forms/';
         
         let serverLabelMap = new Map();
         let serverSettingsMap = new Map();
@@ -233,7 +237,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.2";
+        let APP_VERSION = "1.7.3";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -1482,25 +1486,30 @@
             setState({ isPreDepartureCheckMenuOpen: false });
         };
 
-        window.openElectronicDroneFormPage = () => {
-            const electronicDroneFormWindow = window.open(
-                'https://dla6154-dev.github.io/shipinfo-system/drone-forms/',
-                'electronic-drone-form',
-                'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
-            );
-            if (!electronicDroneFormWindow) {
-                setState({
-                    isHolidayWorkMenuOpen: false,
-                    isPreDepartureCheckMenuOpen: false,
-                    statusMessage: '팝업이 차단되어 전자 드론서식 페이지를 열 수 없습니다.'
-                });
-                return;
-            }
-            electronicDroneFormWindow.focus();
+        window.openElectronicDroneFormPage = async () => {
             setState({
                 isHolidayWorkMenuOpen: false,
                 isPreDepartureCheckMenuOpen: false
             });
+            try {
+                if (electronShell && electronShell.openExternal) {
+                    await electronShell.openExternal(ELECTRONIC_DRONE_FORM_URL);
+                    return;
+                }
+                const electronicDroneFormWindow = window.open(
+                    ELECTRONIC_DRONE_FORM_URL,
+                    'electronic-drone-form',
+                    'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
+                );
+                if (!electronicDroneFormWindow) {
+                    setState({ statusMessage: '팝업이 차단되어 전자 드론서식 페이지를 열 수 없습니다.' });
+                    return;
+                }
+                electronicDroneFormWindow.focus();
+            } catch (error) {
+                console.error('Failed to open electronic drone form page:', error);
+                setState({ statusMessage: '전자 드론서식 페이지를 열 수 없습니다.' });
+            }
         };
 
         window.minimizeMainWindow = () => {
@@ -4586,16 +4595,16 @@
                                                 </button>
                                             </div>
                                         ` : ''}
+                                        <div class="absolute left-full top-0 ml-2 w-28">
+                                            <button
+                                                id="open-electronic-drone-form-btn"
+                                                class="whitespace-nowrap flex items-center justify-center text-xs font-semibold px-3 py-1 bg-amber-200 text-amber-950 border border-amber-300 hover:bg-amber-300 rounded-lg shadow transition duration-150"
+                                                title="전자 드론서식"
+                                            >
+                                                전자 드론서식
+                                            </button>
+                                        </div>
                                     </div>
-                                </div>
-                                <div class="flex flex-col pt-[118px] shrink-0">
-                                    <button
-                                        id="open-electronic-drone-form-btn"
-                                        class="w-28 whitespace-nowrap flex items-center justify-center text-xs font-semibold px-3 py-1 bg-amber-200 text-amber-950 border border-amber-300 hover:bg-amber-300 rounded-lg shadow transition duration-150"
-                                        title="전자 드론서식"
-                                    >
-                                        전자 드론서식
-                                    </button>
                                 </div>
                                 <div class="flex flex-col space-y-1">
                                     <button
