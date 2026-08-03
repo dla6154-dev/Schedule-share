@@ -38,7 +38,8 @@
         #holiday-work-toggle-btn,
         #pre-departure-check-panel,
         #pre-departure-check-toggle-btn,
-        #open-electronic-drone-form-btn {
+        #open-electronic-drone-form-btn,
+        #open-band-post-helper-btn {
             width: 100%;
         }
         /* 창 드래그 가능 영역 설정 */
@@ -145,6 +146,7 @@
             namgang: 'https://vessel-inspection-app.pages.dev/#namgang'
         });
         const ELECTRONIC_DRONE_FORM_URL = 'https://dla6154-dev.github.io/shipinfo-system/drone-forms/';
+        const BAND_POST_HELPER_URL = 'https://dla6154-dev.github.io/national-visibility-band-helper/';
         
         let serverLabelMap = new Map();
         let serverSettingsMap = new Map();
@@ -237,7 +239,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.3";
+        let APP_VERSION = "1.7.4";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -1509,6 +1511,32 @@
             } catch (error) {
                 console.error('Failed to open electronic drone form page:', error);
                 setState({ statusMessage: '전자 드론서식 페이지를 열 수 없습니다.' });
+            }
+        };
+
+        window.openBandPostHelperPage = async () => {
+            setState({
+                isHolidayWorkMenuOpen: false,
+                isPreDepartureCheckMenuOpen: false
+            });
+            try {
+                if (electronShell && electronShell.openExternal) {
+                    await electronShell.openExternal(BAND_POST_HELPER_URL);
+                    return;
+                }
+                const bandPostHelperWindow = window.open(
+                    BAND_POST_HELPER_URL,
+                    'band-post-helper',
+                    'width=1280,height=900,resizable=yes,menubar=no,toolbar=no,location=yes,status=no,scrollbars=yes'
+                );
+                if (!bandPostHelperWindow) {
+                    setState({ statusMessage: '팝업이 차단되어 밴드 게시 도우미 페이지를 열 수 없습니다.' });
+                    return;
+                }
+                bandPostHelperWindow.focus();
+            } catch (error) {
+                console.error('Failed to open band post helper page:', error);
+                setState({ statusMessage: '밴드 게시 도우미 페이지를 열 수 없습니다.' });
             }
         };
 
@@ -4567,6 +4595,15 @@
                                                 </button>
                                             </div>
                                         ` : ''}
+                                        <div class="absolute left-full top-0 ml-2 w-28">
+                                            <button
+                                                id="open-band-post-helper-btn"
+                                                class="w-full whitespace-nowrap flex items-center justify-center text-[11px] font-semibold px-2.5 py-1 bg-green-100 text-green-800 border border-green-200 hover:bg-green-200 rounded-lg shadow transition duration-150"
+                                                title="밴드 게시 도우미"
+                                            >
+                                                밴드 게시 도우미
+                                            </button>
+                                        </div>
                                     </div>
                                     <div id="pre-departure-check-panel" class="relative w-full">
                                         <button
@@ -4750,6 +4787,10 @@
             const electronicDroneFormBtn = document.getElementById('open-electronic-drone-form-btn');
             if (electronicDroneFormBtn) {
                 electronicDroneFormBtn.onclick = () => window.openElectronicDroneFormPage();
+            }
+            const bandPostHelperBtn = document.getElementById('open-band-post-helper-btn');
+            if (bandPostHelperBtn) {
+                bandPostHelperBtn.onclick = () => window.openBandPostHelperPage();
             }
             const minimizeWindowBtn = document.getElementById('minimize-window-btn');
             if (minimizeWindowBtn) {
