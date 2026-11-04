@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, Menu, ipcMain, Notification, dialog } = require('electron'); 
+const { app, BrowserWindow, screen, Menu, ipcMain, Notification } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 app.commandLine.appendSwitch('force-color-profile', 'srgb');
@@ -361,6 +361,9 @@ function setupIpcListeners() {
             windowRef.close();
         }
     });
+    ipcMain.on('install-update-now', () => {
+        autoUpdater.quitAndInstall();
+    });
 
     ipcMain.handle('get-team-list', () => TEAM_SERVERS);
     ipcMain.handle('verify-admin-password', (_event, { password }) => {
@@ -549,20 +552,6 @@ function setupAutoUpdater(mainWindow) {
 
     autoUpdater.on('update-downloaded', () => {
         sendUpdateEvent('update-download-complete');
-        const messageBoxOptions = {
-            type: 'info',
-            buttons: ['지금 재시작', '나중에'],
-            defaultId: 0,
-            cancelId: 1,
-            title: '업데이트 준비 완료',
-            message: '업데이트가 다운로드되었습니다. 지금 재시작할까요?'
-        };
-
-        dialog.showMessageBox(mainWindow, messageBoxOptions).then((result) => {
-            if (result.response === 0) {
-                autoUpdater.quitAndInstall();
-            }
-        });
     });
 
     autoUpdater.checkForUpdates();

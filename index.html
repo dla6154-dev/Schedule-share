@@ -44,8 +44,8 @@
         }
         /* 창 드래그 가능 영역 설정 */
         .window-drag-area {
-             -webkit-app-region: drag;
-             cursor: grab; 
+             -webkit-app-region: no-drag;
+             cursor: default;
         }
         .window-no-drag {
              -webkit-app-region: no-drag;
@@ -60,6 +60,8 @@
             left: 0;
             right: 0;
             z-index: 10;
+            -webkit-app-region: drag;
+            cursor: grab;
             transition: background-color 0.3s;
         }
         .drag-hint:hover {
@@ -138,8 +140,8 @@
 
         let appId = null; 
         const HOLIDAY_WORK_LINKS = Object.freeze({
-            admin: 'https://komsa-comp-leave.pages.dev/comp_leave_admin.html',
-            personal: 'https://komsa-comp-leave.pages.dev/'
+            admin: 'https://komsa-comp-leave.pages.dev/mokpo/admin',
+            personal: 'https://komsa-comp-leave.pages.dev/mokpo/'
         });
         const PRE_DEPARTURE_CHECK_LINKS = Object.freeze({
             jindo: 'https://vessel-inspection-app.pages.dev/#jindo',
@@ -239,7 +241,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.4";
+        let APP_VERSION = "1.7.5";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');
@@ -280,6 +282,7 @@
             isAdminModalOpen: false, // ?? [추가] 관리자 비밀번호 모달 상태
             isMemoModalOpen: false,
             isUpdateModalOpen: false,
+            isUpdateReady: false,
             updateProgressPercent: 0,
             updateProgressText: '',
             isServerSwitchModalOpen: false,
@@ -1548,6 +1551,11 @@
         window.closeMainWindow = () => {
             if (!ipcRenderer) return;
             ipcRenderer.send('window-close');
+        };
+
+        window.installDownloadedUpdate = () => {
+            if (!ipcRenderer) return;
+            ipcRenderer.send('install-update-now');
         };
 
         document.addEventListener('click', (event) => {
@@ -2960,6 +2968,7 @@
             ipcRenderer.on('update-download-start', () => {
                 setState({
                     isUpdateModalOpen: true,
+                    isUpdateReady: false,
                     updateProgressPercent: 0,
                     updateProgressText: '다운로드를 시작합니다...'
                 });
@@ -2973,6 +2982,7 @@
                 const detail = speed ? `${transferred} / ${total} · ${speed}` : `${transferred} / ${total}`;
                 setState({
                     isUpdateModalOpen: true,
+                    isUpdateReady: false,
                     updateProgressPercent: percent,
                     updateProgressText: detail
                 });
@@ -2981,6 +2991,7 @@
             ipcRenderer.on('update-download-complete', () => {
                 setState({
                     isUpdateModalOpen: true,
+                    isUpdateReady: true,
                     updateProgressPercent: 100,
                     updateProgressText: '다운로드 완료'
                 });
@@ -3141,25 +3152,45 @@
         const renderUpdateModal = () => {
             if (!state.isUpdateModalOpen) return;
 
+            const isReady = Boolean(state.isUpdateReady);
             const percent = Math.max(0, Math.min(100, Math.round(state.updateProgressPercent || 0)));
             const modalHtml = `
                 <div id="update-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 window-no-drag">
                     <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm transform transition-all scale-100 duration-300">
                         <div class="flex justify-between items-center p-4 border-b border-gray-200">
-                            <h2 class="text-lg font-bold text-indigo-700">업데이트 다운로드 중</h2>
+                            <h2 class="text-lg font-bold text-indigo-700">${isReady ? '업데이트 준비 완료' : '업데이트 다운로드 중'}</h2>
                             <button id="update-modal-close-btn" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100">
                                 ${createIcon('X', 'w-5 h-5')}
                             </button>
                         </div>
                         <div class="p-4">
-                            <div class="w-full bg-gray-200 rounded-full h-2 mb-3 overflow-hidden">
-                                <div class="bg-indigo-500 h-2 transition-all duration-300" style="width: ${percent}%"></div>
-                            </div>
-                            <div class="flex items-center justify-between text-xs text-gray-600 mb-2">
-                                <span>${percent}%</span>
-                                <span>${state.updateProgressText || ''}</span>
-                            </div>
-                            <p class="text-xs text-gray-500">다운로드가 완료되면 재시작 안내가 표시됩니다.</p>
+                            ${isReady ? `
+                                <p class="text-sm text-gray-700">업데이트 파일 다운로드가 끝났습니다. 지금 재시작하면 최신 버전이 바로 적용됩니다.</p>
+                                <p class="mt-2 text-xs text-gray-500">${state.updateProgressText || ''}</p>
+                                <div class="mt-4 flex justify-end space-x-2">
+                                    <button
+                                        id="update-modal-later-btn"
+                                        class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-lg hover:bg-gray-300 transition duration-150"
+                                    >
+                                        나중에
+                                    </button>
+                                    <button
+                                        id="update-modal-restart-btn"
+                                        class="px-4 py-2 text-sm font-semibold text-white rounded-lg shadow-md transition duration-150 bg-indigo-500 hover:bg-indigo-700"
+                                    >
+                                        지금 재시작
+                                    </button>
+                                </div>
+                            ` : `
+                                <div class="w-full bg-gray-200 rounded-full h-2 mb-3 overflow-hidden">
+                                    <div class="bg-indigo-500 h-2 transition-all duration-300" style="width: ${percent}%"></div>
+                                </div>
+                                <div class="flex items-center justify-between text-xs text-gray-600 mb-2">
+                                    <span>${percent}%</span>
+                                    <span>${state.updateProgressText || ''}</span>
+                                </div>
+                                <p class="text-xs text-gray-500">다운로드가 완료되면 재시작 버튼이 표시됩니다.</p>
+                            `}
                         </div>
                     </div>
                 </div>
@@ -3169,9 +3200,18 @@
             container.innerHTML = modalHtml;
             document.body.appendChild(container);
 
+            const closeUpdateModal = () => setState({ isUpdateModalOpen: false });
             const closeBtn = document.getElementById('update-modal-close-btn');
             if (closeBtn) {
-                closeBtn.onclick = () => setState({ isUpdateModalOpen: false });
+                closeBtn.onclick = closeUpdateModal;
+            }
+            const laterBtn = document.getElementById('update-modal-later-btn');
+            if (laterBtn) {
+                laterBtn.onclick = closeUpdateModal;
+            }
+            const restartBtn = document.getElementById('update-modal-restart-btn');
+            if (restartBtn) {
+                restartBtn.onclick = () => window.installDownloadedUpdate();
             }
         };
 
