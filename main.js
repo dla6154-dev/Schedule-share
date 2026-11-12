@@ -24,6 +24,13 @@ let DEFAULT_APP_ID = INITIAL_TEAM_SERVERS[0].appId; // 초기 기본 ID
 let CURRENT_APP_ID = DEFAULT_APP_ID; // 현재 선택된 서버 ID (라디오 표시용)
 let ADMIN_SETTINGS = { passwordSalt: '', passwordHash: '' };
 let MAIN_WINDOW = null;
+const MAXIMIZED_CHILD_WINDOW_NAMES = new Set([
+    'dispatch-rotation',
+    'holiday-work-admin',
+    'pre-departure-check-jindo',
+    'pre-departure-check-namgang',
+    'electronic-drone-form',
+]);
 
 
 // ===============================================================
@@ -620,10 +627,14 @@ function createWindow(initialAppId) {
         }
     }));
 
-    mainWindow.webContents.on('did-create-window', (childWindow) => {
+    mainWindow.webContents.on('did-create-window', (childWindow, details) => {
         childWindow.setMenu(null);
         childWindow.setMenuBarVisibility(false);
         childWindow.setAutoHideMenuBar(true);
+        if (details && MAXIMIZED_CHILD_WINDOW_NAMES.has(details.frameName)) {
+            childWindow.maximize();
+            childWindow.show();
+        }
     });
     
     // 3. 우클릭 메뉴 (Context Menu) 추가
