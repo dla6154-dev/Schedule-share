@@ -688,7 +688,7 @@
             padding: 5px 4px;
             border-bottom: 1px solid #e3e1da;
             color: #40545a;
-            font-size: 10px;
+            font-size: 13px;
             text-align: center;
             white-space: nowrap;
         }
@@ -707,7 +707,13 @@
         .status-caution .weather-table-status { background: #d29229; }
         .status-nodata .weather-table-status { background: #99a4a5; }
         .weather-table-station-text { min-width: 0; }
-        .weather-table-station strong { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+        .weather-observation-table { table-layout: fixed; }
+        .weather-observation-table th:first-child { width: 105px; }
+        .weather-observation-table td:nth-child(n+4) { font-weight: 700; }
+        .weather-number { display: inline-block; padding: 3px 5px; border-radius: 5px; }
+        .weather-number.caution { color: #805000; background: #ffdf87; }
+        .weather-number.danger { color: #a11616; background: #ffd0ce; outline: 1px solid #dc7770; }
+        .weather-table-station strong { display: block; font-size: 13px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
         .weather-table-station small { display: block; color: #788386; font-size: 8px; }
         .weather-station-card {
             width: 100%;
@@ -899,7 +905,8 @@
             open: false,
             loading: false,
             cache: {},
-            fastHistory: [],
+            historyByStation: {},
+            historyLoading: new Set(),
             prefs: null,
             selectedId: '',
             fetchedAt: ''
@@ -960,6 +967,14 @@
             if ((wind != null && wind >= 12) || (wave != null && wave >= 3.5)) return 'danger';
             if ((wind != null && wind >= 7) || (wave != null && wave >= 2)) return 'caution';
             return 'normal';
+        }
+
+        function weatherNumberHtml(value, kind) {
+            const number = weatherNumber(value);
+            const caution = kind === 'wind' ? 7 : 2;
+            const danger = kind === 'wind' ? 12 : 3.5;
+            const status = number == null ? '' : number >= danger ? 'danger' : number >= caution ? 'caution' : '';
+            return `<span class="weather-number ${status}" title="${status === 'danger' ? '위험 기준 이상' : status === 'caution' ? '주의 기준 이상' : ''}">${weatherEscape(weatherMetricText(value))}</span>`;
         }
 
         function weatherCurrentRecord(station) {
@@ -1147,18 +1162,17 @@
                                 <span class="weather-table-station-text"><strong>${weatherEscape(name)}</strong><small>${weatherEscape(kind)}</small></span>
                             </span>
                         </td>
-                        <td><span class="weather-status-badge">${statusMeta.label}</span></td>
                         <td>${weatherEscape(weatherTimeText(record))}</td>
                         <td>${weatherEscape(record?.windDirection || '-')}</td>
-                        <td>${weatherEscape(weatherMetricText(record?.windSpeed))}</td>
-                        <td>${weatherEscape(weatherMetricText(gust))}</td>
-                        <td>${weatherEscape(weatherMetricText(record?.waveHeight))}</td>
+                        <td>${weatherNumberHtml(record?.windSpeed, 'wind')}</td>
+                        <td>${weatherNumberHtml(gust, 'wind')}</td>
+                        <td>${weatherNumberHtml(record?.waveHeight, 'wave')}</td>
                         <td>${weatherEscape(weatherMetricText(record?.waveHeightMax))}</td>
                     </tr>`;
             }).join('');
             list.innerHTML = `
                 <table class="weather-observation-table" aria-label="관측지점 현황">
-                    <thead><tr><th>지점</th><th>상태</th><th>관측</th><th>풍향</th><th>풍속<br>(m/s)</th><th>돌풍<br>(m/s)</th><th>파고<br>(m)</th><th>최대파고<br>(m)</th></tr></thead>
+                    <thead><tr><th>지점</th><th>관측</th><th>풍향</th><th>풍속<br>(m/s)</th><th>돌풍<br>(m/s)</th><th>파고<br>(m)</th><th>최대파고<br>(m)</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table>`;
         }
@@ -1179,16 +1193,46 @@
             if (source === 'buoy') {
                 Object.values(remoteHistory).forEach((rows) => Array.isArray(rows) && rows.forEach(add));
             }
-            weatherDrawerState.fastHistory.forEach((snapshot) => {
-                const sources = snapshot?.payload || {};
-                const nmpnt = sources['wb-nmpnt']?.payload;
-                const aws = sources['wb-aws']?.payload;
-                if (source === 'nm') (nmpnt?.rows || []).forEach(add);
-                if (source === 'aws') (aws?.rows || []).forEach(add);
-                if (stationId === '959') Object.values(aws?.lh || {}).forEach(add);
-            });
+            (weatherDrawerState.historyByStation[stationId] || []).forEach(add);
             add(weatherCurrentRecord(station));
             return Array.from(samples.values()).sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
+        }
+
+        function weatherHistorySelect(station) {
+            const [stationId, , , source] = station;
+            const compactId = weatherCompactStationId(station);
+            if (source === 'nm') return `captured_at,sample:payload->wb-nmpnt->payload->byId->${compactId}`;
+            if (source === 'aws') {
+                const group = stationId === '959' ? 'lh' : 'byId';
+                return `captured_at,sample:payload->wb-aws->payload->${group}->${compactId}`;
+            }
+            return '';
+        }
+
+        async function loadWeatherStationHistory(station) {
+            const stationId = station[0];
+            const select = weatherHistorySelect(station);
+            if (!select || Object.hasOwn(weatherDrawerState.historyByStation, stationId) || weatherDrawerState.historyLoading.has(stationId)) return;
+            weatherDrawerState.historyLoading.add(stationId);
+            if (weatherDrawerState.selectedId === stationId) renderWeatherDetail(stationId);
+            try {
+                const headers = { apikey: WEATHER_SUPABASE_KEY, Authorization: `Bearer ${WEATHER_SUPABASE_KEY}` };
+                const historyUrl = new URL(`${WEATHER_SUPABASE_URL}/rest/v1/weather_board_history`);
+                historyUrl.searchParams.set('select', select);
+                historyUrl.searchParams.set('captured_at', `gte.${new Date(Date.now() - WEATHER_HISTORY_WINDOW_MS).toISOString()}`);
+                historyUrl.searchParams.set('order', 'captured_at.asc');
+                const response = await fetch(historyUrl.toString(), { headers, cache: 'no-store' });
+                if (!response.ok) throw new Error(`이력 서버 응답 ${response.status}`);
+                weatherDrawerState.historyByStation[stationId] = (await response.json())
+                    .filter((row) => row.sample)
+                    .map((row) => ({ ...row.sample, observedAt: row.captured_at }));
+            } catch (error) {
+                console.warn('관측 이력 조회 실패:', error);
+                weatherDrawerState.historyByStation[stationId] = [];
+            } finally {
+                weatherDrawerState.historyLoading.delete(stationId);
+                if (weatherDrawerState.selectedId === stationId) renderWeatherDetail(stationId);
+            }
         }
 
         function renderWeatherDetail(stationId) {
@@ -1202,6 +1246,10 @@
             const historyWrap = document.getElementById('weather-history-wrap');
             const record = weatherCurrentRecord(station);
             const samples = collectWeatherHistory(station);
+            if (weatherHistorySelect(station) && !Object.hasOwn(weatherDrawerState.historyByStation, stationId)) {
+                loadWeatherStationHistory(station);
+            }
+            const isHistoryLoading = weatherDrawerState.historyLoading.has(stationId);
             listView.hidden = true;
             detailView.hidden = false;
             title.textContent = `${station[1]} · 최근 6시간`;
@@ -1215,7 +1263,7 @@
                     ${weatherCardMetric('최대파고', weatherMetricText(record?.waveHeightMax))}
                 </div>`;
             if (!samples.length) {
-                historyWrap.innerHTML = '<div class="weather-empty">저장된 6시간 관측기록이 아직 없습니다.</div>';
+                historyWrap.innerHTML = `<div class="weather-empty">${isHistoryLoading ? '최근 6시간 기록을 불러오는 중입니다.' : '저장된 6시간 관측기록이 아직 없습니다.'}</div>`;
                 return;
             }
             historyWrap.innerHTML = `
@@ -1248,24 +1296,16 @@
             const meta = document.getElementById('weather-drawer-meta');
             if (refreshButton) refreshButton.disabled = true;
             if (!silent && list && !Object.keys(weatherDrawerState.cache).length) {
-                list.innerHTML = '<div class="weather-empty">관측자료와 6시간 기록을 불러오는 중입니다.</div>';
+                list.innerHTML = '<div class="weather-empty">최신 관측자료를 불러오는 중입니다.</div>';
             }
             try {
                 const headers = { apikey: WEATHER_SUPABASE_KEY, Authorization: `Bearer ${WEATHER_SUPABASE_KEY}` };
                 const cacheIds = ['kma-buoy-snapshot', 'wb-nmpnt', 'wb-aws'];
                 const cacheUrl = `${WEATHER_SUPABASE_URL}/rest/v1/external_api_cache?select=id,payload,fetchedAt&id=in.(${cacheIds.join(',')})`;
-                const historyUrl = new URL(`${WEATHER_SUPABASE_URL}/rest/v1/weather_board_history`);
-                historyUrl.searchParams.set('select', 'captured_at,payload');
-                historyUrl.searchParams.set('captured_at', `gte.${new Date(Date.now() - WEATHER_HISTORY_WINDOW_MS).toISOString()}`);
-                historyUrl.searchParams.set('order', 'captured_at.asc');
-                const [cacheResponse, historyResponse] = await Promise.all([
-                    fetch(cacheUrl, { headers, cache: 'no-store' }),
-                    fetch(historyUrl.toString(), { headers, cache: 'no-store' })
-                ]);
+                const cacheResponse = await fetch(cacheUrl, { headers, cache: 'no-store' });
                 if (!cacheResponse.ok) throw new Error(`관측자료 서버 응답 ${cacheResponse.status}`);
                 const cacheRows = await cacheResponse.json();
                 weatherDrawerState.cache = Object.fromEntries(cacheRows.map((row) => [row.id, row]));
-                weatherDrawerState.fastHistory = historyResponse.ok ? await historyResponse.json() : [];
                 weatherDrawerState.fetchedAt = cacheRows.reduce((latest, row) => row.fetchedAt > latest ? row.fetchedAt : latest, '');
                 const shown = weatherStationRecords();
                 const available = shown.filter((item) => item.record).length;
@@ -1301,14 +1341,28 @@
                 drawer.classList.toggle('open', weatherDrawerState.open);
                 toggle.setAttribute('aria-expanded', String(weatherDrawerState.open));
                 toggle.title = weatherDrawerState.open ? '관측지점 정보 닫기' : '관측지점 정보 열기';
-                ipcRenderer.invoke('weather-panel-set', { open: weatherDrawerState.open }).catch(() => null);
+                ipcRenderer.invoke('weather-panel-set', { open: weatherDrawerState.open })
+                    .then((result) => {
+                        // 창 복원 직후에는 이전 상태 이벤트가 늦게 올 수 있으므로, 실패 시만 UI를 되돌린다.
+                        if (!result?.ok) {
+                            weatherDrawerState.open = false;
+                            drawer.classList.remove('open');
+                            toggle.setAttribute('aria-expanded', 'false');
+                            toggle.title = '관측지점 정보 열기';
+                        }
+                    })
+                    .catch(() => null);
                 return;
             }
             drawer.classList.toggle('open', weatherDrawerState.open);
             drawer.setAttribute('aria-hidden', String(!weatherDrawerState.open));
             toggle.setAttribute('aria-expanded', String(weatherDrawerState.open));
             toggle.title = weatherDrawerState.open ? '관측지점 정보 닫기' : '관측지점 정보 열기';
-            if (weatherDrawerState.open && !Object.keys(weatherDrawerState.cache).length) refreshWeatherDrawer();
+            if (weatherDrawerState.open) {
+                showWeatherStationList();
+                renderWeatherStationList();
+                refreshWeatherDrawer({ silent: Object.keys(weatherDrawerState.cache).length > 0 });
+            }
         }
 
         function initializeWeatherDrawer() {
@@ -1328,17 +1382,19 @@
                 weatherDrawerState.open = true;
                 ipcRenderer?.on('weather-panel-shown', () => {
                     weatherDrawerState.prefs = loadWeatherPrefs();
+                    showWeatherStationList();
+                    renderWeatherStationList();
                     refreshWeatherDrawer({ silent: Object.keys(weatherDrawerState.cache).length > 0 });
                 });
             }
             if (USE_WEATHER_PANEL_WINDOW) {
                 document.body.classList.add('weather-panel-host');
                 ipcRenderer.on('weather-panel-state', (_event, open) => {
-                    if (weatherDrawerState.open === Boolean(open)) return;
                     weatherDrawerState.open = Boolean(open);
                     const drawer = document.getElementById('weather-drawer');
                     drawer.classList.toggle('open', weatherDrawerState.open);
                     toggle?.setAttribute('aria-expanded', String(weatherDrawerState.open));
+                    if (toggle) toggle.title = weatherDrawerState.open ? '관측지점 정보 닫기' : '관측지점 정보 열기';
                 });
             }
             toggle?.addEventListener('click', () => setWeatherDrawerOpen(!weatherDrawerState.open));
@@ -1508,7 +1564,7 @@
         
         const initialAuthToken = null; 
         const firebaseConfig = FIREBASE_CONFIG;
-        let APP_VERSION = "1.7.6";
+        let APP_VERSION = "1.7.8";
                 if (ipcRenderer) {
             try {
                 APP_VERSION = ipcRenderer.sendSync('get-app-version');

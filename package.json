@@ -1,6 +1,6 @@
 {
   "name": "task-sharing-platform",
-  "version": "1.7.7",
+  "version": "1.7.8",
   "description": "Electron-based shared/private task board",
   "main": "main.js",
   "scripts": {
@@ -28,6 +28,7 @@
     "electron-builder": "^24.9.1"
   },
   "build": {
+    "artifactName": "task-sharing-platform-setup-${version}.${ext}",
     "appId": "com.yourcompany.taskplatform",
     "productName": "업무 공유 플랫폼",
     "files": [
