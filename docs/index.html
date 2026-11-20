@@ -500,6 +500,264 @@
             .task-card-content { padding-right: 78px !important; }
             .task-card-title { font-size: 13px !important; }
         }
+        .weather-drawer {
+            --weather-drawer-width: min(600px, calc(100vw - 54px));
+            position: fixed;
+            inset: 0 auto 0 0;
+            z-index: 80;
+            width: var(--weather-drawer-width);
+            color: #183a4b;
+            pointer-events: none;
+            --weather-unfold: 420ms cubic-bezier(.65, 0, .25, 1);
+        }
+        .weather-drawer-toggle {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 43px;
+            height: 92px;
+            display: grid;
+            place-items: center;
+            pointer-events: auto;
+            transform: translate(0, -50%);
+            transition: transform var(--weather-unfold), background 140ms ease;
+            border: 1px solid #87a1a8;
+            border-left: 0;
+            border-radius: 0 13px 13px 0;
+            color: #fff;
+            background: linear-gradient(180deg, #245d68, #183f4b);
+            box-shadow: 8px 4px 18px rgba(30, 58, 67, 0.2);
+            cursor: pointer;
+            -webkit-app-region: no-drag;
+        }
+        .weather-drawer-toggle:hover { background: linear-gradient(180deg, #2d717b, #1a4b58); }
+        .weather-drawer-toggle span {
+            display: block;
+            font-size: 30px;
+            font-weight: 500;
+            line-height: 1;
+            transition: transform 180ms ease;
+        }
+        .weather-drawer.open .weather-drawer-toggle span { transform: rotate(180deg); }
+        .weather-drawer.open .weather-drawer-toggle { transform: translate(var(--weather-drawer-width), -50%); }
+        .weather-drawer-shell {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            background: #f7f3e9;
+            border-right: 1px solid #9eb2b7;
+            box-shadow: 16px 0 44px rgba(28, 48, 55, 0.24);
+            /* 왼쪽 가장자리에서 오른쪽으로 펼쳐지는 효과: 내용은 제자리, 보이는 영역만 넓어짐 */
+            clip-path: inset(0 100% 0 0);
+            visibility: hidden;
+            transition: clip-path var(--weather-unfold), visibility 0s linear 420ms;
+        }
+        .weather-drawer.open .weather-drawer-shell {
+            clip-path: inset(0 -60px 0 0);
+            visibility: visible;
+            pointer-events: auto;
+            transition: clip-path var(--weather-unfold), visibility 0s;
+        }
+        .weather-drawer-body, .weather-drawer-head > * {
+            opacity: 0;
+            transition: opacity 180ms ease;
+        }
+        .weather-drawer.open .weather-drawer-body,
+        .weather-drawer.open .weather-drawer-head > * {
+            opacity: 1;
+            transition: opacity 260ms ease 140ms;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .weather-drawer { --weather-unfold: 1ms linear; }
+        }
+        /* EXE 앱 창: 패널은 별도 창으로 뜨므로 손잡이만 왼쪽 끝에 둔다. 패널이 왼쪽에 열리므로 닫힘 ‹ / 열림 › */
+        body.weather-panel-host .weather-drawer-shell { display: none; }
+        body.weather-panel-host .weather-drawer-toggle,
+        body.weather-panel-host .weather-drawer.open .weather-drawer-toggle { transform: translate(0, -50%); transition: background 140ms ease; }
+        body.weather-panel-host .weather-drawer-toggle span { transform: rotate(180deg); }
+        body.weather-panel-host .weather-drawer.open .weather-drawer-toggle span { transform: rotate(0deg); }
+        /* EXE 패널 창: 창 전체가 패널 */
+        body.weather-panel-window { padding: 0 !important; overflow: hidden; background: #f7f3e9; }
+        body.weather-panel-window #app-container { display: none !important; }
+        body.weather-panel-window .weather-drawer { width: 100vw; pointer-events: auto; }
+        body.weather-panel-window .weather-drawer-toggle { display: none; }
+        body.weather-panel-window .weather-drawer-shell { clip-path: none; visibility: visible; pointer-events: auto; transition: none; box-shadow: none; }
+        body.weather-panel-window .weather-drawer-body,
+        body.weather-panel-window .weather-drawer-head > * { opacity: 1; transition: none; }
+        .weather-drawer-head {
+            padding: 18px 18px 14px;
+            color: #f9faf7;
+            background:
+                linear-gradient(130deg, rgba(255,255,255,.1), transparent 42%),
+                #183f4b;
+            border-bottom: 4px solid #d6a548;
+        }
+        .weather-drawer-kicker {
+            margin: 0 0 4px;
+            color: #b9d9d8;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .16em;
+        }
+        .weather-drawer-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .weather-drawer-title { margin: 0; font-family: 'Noto Serif KR', serif; font-size: 21px; letter-spacing: -.03em; }
+        .weather-refresh-btn {
+            width: 34px;
+            height: 34px;
+            flex: 0 0 auto;
+            display: grid;
+            place-items: center;
+            border: 1px solid rgba(255,255,255,.38);
+            border-radius: 10px;
+            color: #fff;
+            background: rgba(255,255,255,.09);
+            cursor: pointer;
+        }
+        .weather-refresh-btn:hover { background: rgba(255,255,255,.18); }
+        .weather-refresh-btn:disabled { opacity: .5; cursor: wait; }
+        .weather-drawer-meta { margin-top: 8px; color: #c9d9d9; font-size: 11px; }
+        .weather-drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        .weather-list-view { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+        .weather-settings-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; }
+        .weather-settings-summary { color: #5d6f73; font-size: 11px; font-weight: 700; }
+        .weather-settings-btn {
+            display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+            border: 1px solid #9fb6b8; border-radius: 9px; color: #1f4f59; background: #fffdf8;
+            font-size: 12px; font-weight: 800; cursor: pointer;
+        }
+        .weather-settings-btn:hover, .weather-settings-btn[aria-expanded="true"] { color: #fff; background: #245d68; border-color: #245d68; }
+        .weather-settings-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 0 10px 12px; border: 1px solid #cbd1cd; border-radius: 10px; background: #fffdf8; overflow: hidden; }
+        .weather-settings-panel[hidden] { display: none; }
+        .weather-settings-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border-bottom: 1px solid #d9ddd8; background: #e4ece9; color: #36545c; font-size: 10px; font-weight: 700; }
+        .weather-settings-actions { display: flex; gap: 4px; }
+        .weather-settings-actions button { padding: 4px 8px; border: 1px solid #b9c6c5; border-radius: 7px; color: #36545c; background: #fffdf8; font-size: 10px; font-weight: 800; cursor: pointer; }
+        .weather-settings-actions button.primary { color: #fff; background: #245d68; border-color: #245d68; }
+        .weather-settings-list { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 0; list-style: none; scrollbar-width: thin; }
+        .weather-settings-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #ece9e1; font-size: 11px; }
+        .weather-settings-item:nth-child(even) { background: #faf8f1; }
+        .weather-settings-item.off { opacity: .5; }
+        .weather-settings-item label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .weather-settings-item input { width: 15px; height: 15px; accent-color: #245d68; }
+        .weather-settings-item .num { width: 18px; color: #8a9597; font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
+        .weather-settings-item strong { color: #283d43; }
+        .weather-settings-item small { color: #788386; font-size: 9px; }
+        .weather-settings-item { cursor: grab; user-select: none; position: relative; }
+        .weather-drag-handle { width: 22px; height: 26px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 6px; color: #8fa0a2; background: transparent; cursor: grab; touch-action: none; }
+        .weather-drag-handle:hover, .weather-drag-handle:focus-visible { color: #245d68; background: #e4ece9; outline: none; }
+        .weather-settings-list.is-dragging, .weather-settings-list.is-dragging * { cursor: grabbing !important; }
+        .weather-settings-item.dragging {
+            z-index: 2;
+            opacity: 1 !important;
+            background: #fff !important;
+            box-shadow: 0 6px 18px rgba(28, 48, 55, .22);
+            outline: 2px solid #245d68;
+            outline-offset: -2px;
+            border-radius: 6px;
+        }
+        .weather-settings-item.dragging .weather-drag-handle { color: #245d68; }
+        .weather-station-list { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 15px; scrollbar-width: thin; }
+        .weather-observation-table {
+            width: 100%;
+            min-width: 560px;
+            border: 1px solid #cbd1cd;
+            border-radius: 10px;
+            border-collapse: separate;
+            border-spacing: 0;
+            overflow: hidden;
+            color: #31484e;
+            background: #fffdf8;
+            font-variant-numeric: tabular-nums;
+        }
+        .weather-observation-table th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            height: 34px;
+            padding: 6px 4px;
+            border-bottom: 1px solid #b9c6c5;
+            color: #36545c;
+            background: #e4ece9;
+            font-size: 9px;
+            line-height: 1.15;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .weather-observation-table td {
+            height: 40px;
+            padding: 5px 4px;
+            border-bottom: 1px solid #e3e1da;
+            color: #40545a;
+            font-size: 10px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .weather-observation-table tbody tr { cursor: pointer; outline: none; transition: background 120ms ease; }
+        .weather-observation-table tbody tr:nth-child(even) { background: #faf8f1; }
+        .weather-observation-table tbody tr:hover,
+        .weather-observation-table tbody tr:focus-visible { background: #edf5f2; }
+        .weather-observation-table tbody tr:last-child td { border-bottom: 0; }
+        .weather-observation-table td:first-child { border-left: 4px solid #4d9a8d; text-align: left; }
+        .weather-observation-table tr.status-danger td:first-child { border-left-color: #c34a3f; }
+        .weather-observation-table tr.status-caution td:first-child { border-left-color: #d29229; }
+        .weather-observation-table tr.status-nodata td:first-child { border-left-color: #99a4a5; }
+        .weather-table-station { display: flex; align-items: center; min-width: 0; }
+        .weather-table-status { width: 7px; height: 7px; flex: 0 0 auto; margin-right: 6px; border-radius: 50%; background: #4d9a8d; }
+        .status-danger .weather-table-status { background: #c34a3f; }
+        .status-caution .weather-table-status { background: #d29229; }
+        .status-nodata .weather-table-status { background: #99a4a5; }
+        .weather-table-station-text { min-width: 0; }
+        .weather-table-station strong { display: block; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+        .weather-table-station small { display: block; color: #788386; font-size: 8px; }
+        .weather-station-card {
+            width: 100%;
+            display: block;
+            margin: 0 0 7px;
+            padding: 11px 12px;
+            border: 1px solid #d4d2c9;
+            border-left: 4px solid #4d9a8d;
+            border-radius: 11px;
+            color: #283d43;
+            background: #fffdf8;
+            box-shadow: 0 3px 8px rgba(53, 65, 63, .08);
+            text-align: left;
+            cursor: pointer;
+            transition: transform 140ms ease, box-shadow 140ms ease;
+        }
+        .weather-station-card:hover { transform: translateX(2px); box-shadow: 0 5px 13px rgba(53,65,63,.14); }
+        .weather-station-card.status-danger { border-left-color: #c34a3f; }
+        .weather-station-card.status-caution { border-left-color: #d29229; }
+        .weather-station-card.status-nodata { border-left-color: #99a4a5; opacity: .76; }
+        .weather-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .weather-station-name { font-size: 14px; font-weight: 800; }
+        .weather-station-kind { margin-left: 5px; color: #718083; font-size: 10px; font-weight: 600; }
+        .weather-status-badge { padding: 3px 7px; border-radius: 999px; color: #fff; background: #4d9a8d; font-size: 9px; font-weight: 800; }
+        .status-danger .weather-status-badge { background: #c34a3f; }
+        .status-caution .weather-status-badge { background: #d29229; }
+        .status-nodata .weather-status-badge { background: #8f9a9b; }
+        .weather-card-time { margin-top: 3px; color: #788386; font-size: 10px; }
+        .weather-card-metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; margin-top: 9px; }
+        .weather-metric { padding: 6px 3px; border-radius: 7px; background: #f1f2ec; text-align: center; }
+        .weather-metric small { display: block; margin-bottom: 2px; color: #788386; font-size: 8px; font-weight: 700; }
+        .weather-metric b { display: block; overflow: hidden; color: #23424a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+        .weather-empty { padding: 40px 18px; color: #718083; font-size: 12px; line-height: 1.6; text-align: center; }
+        .weather-detail-view { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+        .weather-detail-view[hidden], .weather-list-view[hidden] { display: none; }
+        .weather-detail-head { padding: 12px 14px; border-bottom: 1px solid #d4d1c7; background: #efe9dc; }
+        .weather-back-btn { border: 0; padding: 4px 0; color: #2e6871; background: transparent; font-size: 11px; font-weight: 800; cursor: pointer; }
+        .weather-detail-title { margin: 6px 0 0; color: #203c44; font-size: 18px; }
+        .weather-detail-summary { padding: 11px 14px; border-bottom: 1px solid #d9d5cb; background: #fffdf8; }
+        .weather-history-wrap { flex: 1; min-height: 0; overflow: auto; background: #fffdf8; }
+        .weather-history-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
+        .weather-history-table th { position: sticky; top: 0; z-index: 1; padding: 8px 3px; border-bottom: 1px solid #bfc9c8; color: #36545c; background: #e4ece9; font-size: 9px; }
+        .weather-history-table td { padding: 8px 3px; border-bottom: 1px solid #e5e2da; color: #44575c; font-size: 10px; text-align: center; }
+        .weather-history-table tbody tr:nth-child(even) { background: #faf8f1; }
+        .weather-history-note { padding: 9px 14px; border-top: 1px solid #d2d0c7; color: #718083; background: #f3eee3; font-size: 9px; }
+        .weather-drawer-error { padding: 18px; color: #973f36; font-size: 12px; line-height: 1.6; text-align: center; }
+        @media (max-width: 540px) {
+            .weather-drawer { --weather-drawer-width: calc(100vw - 48px); }
+            .weather-drawer-toggle { width: 39px; }
+        }
     </style>
 </head>
 <!-- 창 크기 고정을 위해 중앙 정렬 및 적절한 여백을 다시 추가합니다. -->
@@ -509,6 +767,59 @@
     <div id="app-container" class="w-full max-w-xl">
         <!-- 앱 내용이 여기에 렌더링됩니다. -->
     </div>
+
+    <aside id="weather-drawer" class="weather-drawer" aria-hidden="true" aria-label="관측지점 정보">
+        <button id="weather-drawer-toggle" class="weather-drawer-toggle" type="button" aria-expanded="false" aria-controls="weather-drawer" title="관측지점 정보 열기">
+            <span aria-hidden="true">›</span>
+        </button>
+        <div class="weather-drawer-shell">
+            <header class="weather-drawer-head">
+                <p class="weather-drawer-kicker">LIVE OBSERVATION</p>
+                <div class="weather-drawer-title-row">
+                    <h2 class="weather-drawer-title">관측지점 정보</h2>
+                    <button id="weather-refresh-btn" class="weather-refresh-btn" type="button" title="관측자료 새로고침" aria-label="관측자료 새로고침">
+                        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 9M4 15l2.4 2.6A7 7 0 0 0 17.9 15"/></svg>
+                    </button>
+                </div>
+                <div id="weather-drawer-meta" class="weather-drawer-meta">화살표를 눌러 최신 자료를 불러옵니다.</div>
+            </header>
+            <div class="weather-drawer-body">
+                <section id="weather-list-view" class="weather-list-view">
+                    <div class="weather-settings-bar">
+                        <span id="weather-settings-summary" class="weather-settings-summary"></span>
+                        <button id="weather-settings-btn" class="weather-settings-btn" type="button" aria-expanded="false" aria-controls="weather-settings-panel">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+                            지점 설정
+                        </button>
+                    </div>
+                    <div id="weather-settings-panel" class="weather-settings-panel" hidden>
+                        <div class="weather-settings-head">
+                            <span>표시할 지점을 체크하고, 끌어서 순서를 바꾸세요.</span>
+                            <span class="weather-settings-actions">
+                                <button type="button" data-weather-settings="all">전체 선택</button>
+                                <button type="button" data-weather-settings="none">전체 해제</button>
+                                <button type="button" data-weather-settings="reset">기본값</button>
+                                <button type="button" data-weather-settings="done" class="primary">완료</button>
+                            </span>
+                        </div>
+                        <ol id="weather-settings-list" class="weather-settings-list"></ol>
+                    </div>
+                    <div id="weather-station-list" class="weather-station-list">
+                        <div class="weather-empty">패널을 열면 관측자료를 불러옵니다.</div>
+                    </div>
+                </section>
+                <section id="weather-detail-view" class="weather-detail-view" hidden>
+                    <div class="weather-detail-head">
+                        <button id="weather-detail-back" class="weather-back-btn" type="button">← 관측지점 목록</button>
+                        <h3 id="weather-detail-title" class="weather-detail-title"></h3>
+                    </div>
+                    <div id="weather-detail-summary" class="weather-detail-summary"></div>
+                    <div id="weather-history-wrap" class="weather-history-wrap"></div>
+                    <div class="weather-history-note">서버에 저장된 최근 6시간 자료입니다. 원본 관측자료가 갱신되지 않은 시간은 중복 표시하지 않습니다.</div>
+                </section>
+            </div>
+        </div>
+    </aside>
 
     <!-- Firebase SDK (모듈) -->
     <script type="module">
@@ -547,6 +858,537 @@
         const ELECTRONIC_DRONE_FORM_URL = 'https://dla6154-dev.github.io/shipinfo-system/drone-forms/';
         const BAND_POST_HELPER_URL = 'https://dla6154-dev.github.io/national-visibility-band-helper/';
         const DISPATCH_ROTATION_URL = 'https://vessel-inspection-app.pages.dev/dispatch_rotation';
+        const WEATHER_SUPABASE_URL = 'https://fnpsaypaxpxyyqmrqwai.supabase.co';
+        const WEATHER_SUPABASE_KEY = 'sb_publishable_o-xN5hfZL6zWqrSGfilJDw_YJNhNEOx';
+        const WEATHER_HISTORY_WINDOW_MS = 6 * 60 * 60 * 1000;
+        const WEATHER_STATIONS = Object.freeze([
+            ['1079001', '안좌도여객터미널', '등대', 'nm'],
+            ['1079002', '홍도등대', '등대', 'nm'],
+            ['1079003', '가거도등대', '등대', 'nm'],
+            ['1079004', '계마항방파제등대', '등대', 'nm'],
+            ['1079008', '외달도등표', '등대', 'nm'],
+            ['22297', '가거도', '부이', 'buoy'],
+            ['22183', '신안', '부이', 'buoy'],
+            ['22102', '칠발도', '부이', 'buoy'],
+            ['22298', '홍도', '부이', 'buoy'],
+            ['22184', '추자도', '부이', 'buoy'],
+            ['22481', '맹골수도', '파고부이', 'buoy'],
+            ['22500', '조도', '파고부이', 'buoy'],
+            ['22449', '진도', '파고부이', 'buoy'],
+            ['33010', '흑산도', '연안방재', 'buoy'],
+            ['33017', '신안', '연안방재', 'buoy'],
+            ['1139001', '하조도등대', '등표', 'buoy'],
+            ['959', '해수서', '등표', 'buoy'],
+            ['530350', '목포', '조위관측소', 'buoy'],
+            ['539800', '진도', '조위관측소', 'buoy'],
+            ['58958', '서거차도', '조위관측소', 'buoy'],
+            ['535951', '대흑산도', '조위관측소', 'buoy'],
+            ['680050', '추자도', '조위관측소', 'buoy'],
+            ['690704', '제주', '조위관측소', 'buoy'],
+            ['513800', '영광', '조위관측소', 'buoy'],
+            ['513864', '향화도', '조위관측소', 'buoy'],
+            ['aws308', '옥도', 'AWS', 'aws']
+        ]);
+        const WEATHER_STATUS = Object.freeze({
+            danger: { label: '위험', rank: 0 },
+            caution: { label: '주의', rank: 1 },
+            normal: { label: '정상', rank: 2 },
+            nodata: { label: '자료없음', rank: 3 }
+        });
+        const weatherDrawerState = {
+            open: false,
+            loading: false,
+            cache: {},
+            fastHistory: [],
+            prefs: null,
+            selectedId: '',
+            fetchedAt: ''
+        };
+
+        const weatherEscape = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        })[character]);
+        const weatherNumber = (value) => {
+            if (value === '' || value == null || value === '-') return null;
+            const parsed = Number(value);
+            return Number.isFinite(parsed) && parsed > -50 ? parsed : null;
+        };
+        const weatherMetricText = (value, suffix = '') => {
+            const parsed = weatherNumber(value);
+            return parsed == null ? '-' : `${parsed.toFixed(1)}${suffix}`;
+        };
+        const weatherCompactStationId = (station) => station[3] === 'aws' ? station[0].replace(/^aws/, '') : station[0];
+
+        function weatherObservedAt(sample) {
+            const explicit = String(sample?.observedAt || '').trim();
+            if (explicit) {
+                const parsed = new Date(explicit);
+                if (!Number.isNaN(parsed.getTime())) return parsed;
+            }
+            const compact = String(sample?.datetime || '').trim();
+            if (/^\d{12,14}$/.test(compact)) {
+                const parsed = new Date(`${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}T${compact.slice(8, 10)}:${compact.slice(10, 12)}:${compact.length >= 14 ? compact.slice(12, 14) : '00'}+09:00`);
+                if (!Number.isNaN(parsed.getTime())) return parsed;
+            }
+            const year = String(sample?.year || '').trim();
+            const monthDay = String(sample?.monthDay || '').trim();
+            const hhmm = String(sample?.hhmm || '').trim();
+            if (/^\d{4}$/.test(year) && /^\d{4}$/.test(monthDay) && /^\d{4}$/.test(hhmm)) {
+                const parsed = new Date(`${year}-${monthDay.slice(0, 2)}-${monthDay.slice(2, 4)}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00+09:00`);
+                if (!Number.isNaN(parsed.getTime())) return parsed;
+            }
+            return null;
+        }
+
+        function weatherTimeText(sample, includeDate = false) {
+            const observedAt = weatherObservedAt(sample);
+            if (!observedAt) {
+                const hhmm = String(sample?.hhmm || '').trim();
+                return /^\d{4}$/.test(hhmm) ? `${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}` : '-';
+            }
+            return new Intl.DateTimeFormat('ko-KR', includeDate
+                ? { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }
+                : { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }
+            ).format(observedAt);
+        }
+
+        function weatherStatusOf(record) {
+            if (!record) return 'nodata';
+            const windValues = [weatherNumber(record.windSpeed), weatherNumber(record.gust), weatherNumber(record.gust30)].filter((value) => value != null);
+            const wind = windValues.length ? Math.max(...windValues) : null;
+            const wave = weatherNumber(record.waveHeight);
+            if ((wind != null && wind >= 12) || (wave != null && wave >= 3.5)) return 'danger';
+            if ((wind != null && wind >= 7) || (wave != null && wave >= 2)) return 'caution';
+            return 'normal';
+        }
+
+        function weatherCurrentRecord(station) {
+            const [stationId, , , source] = station;
+            const compactId = weatherCompactStationId(station);
+            const nmpnt = weatherDrawerState.cache['wb-nmpnt']?.payload;
+            const aws = weatherDrawerState.cache['wb-aws']?.payload;
+            const buoy = weatherDrawerState.cache['kma-buoy-snapshot']?.payload;
+            if (source === 'nm') return nmpnt?.byId?.[compactId] || null;
+            if (source === 'aws') return aws?.byId?.[compactId] || null;
+            const base = (buoy?.rows || []).find((row) => String(row.stationId) === stationId) || null;
+            const lighthouse = aws?.lh?.[stationId];
+            if (!lighthouse) return base;
+            return { ...(base || {}), ...lighthouse, gust: lighthouse.gust30 || lighthouse.gust || base?.gust || '' };
+        }
+
+        const WEATHER_PREFS_KEY = 'weatherStationPrefs.v1';
+        function loadWeatherPrefs() {
+            const ids = WEATHER_STATIONS.map((station) => station[0]);
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem(WEATHER_PREFS_KEY) || 'null'); } catch (e) { saved = null; }
+            const order = Array.isArray(saved?.order) ? saved.order.filter((id) => ids.includes(id)) : [];
+            ids.forEach((id) => { if (!order.includes(id)) order.push(id); });
+            const hidden = Array.isArray(saved?.hidden) ? saved.hidden.filter((id) => ids.includes(id)) : [];
+            return { order, hidden: new Set(hidden) };
+        }
+        function saveWeatherPrefs() {
+            const prefs = weatherDrawerState.prefs;
+            try { localStorage.setItem(WEATHER_PREFS_KEY, JSON.stringify({ order: prefs.order, hidden: Array.from(prefs.hidden) })); } catch (e) { /* 저장 불가 시 이번 세션에만 적용 */ }
+        }
+        const weatherStationById = (id) => WEATHER_STATIONS.find((station) => station[0] === id);
+
+        function weatherStationRecords() {
+            const prefs = weatherDrawerState.prefs;
+            return prefs.order
+                .filter((id) => !prefs.hidden.has(id))
+                .map((id) => weatherStationById(id))
+                .filter(Boolean)
+                .map((station, index) => {
+                    const record = weatherCurrentRecord(station);
+                    return { station, index, record, status: weatherStatusOf(record) };
+                });
+        }
+
+        function renderWeatherSettings() {
+            const listEl = document.getElementById('weather-settings-list');
+            const summary = document.getElementById('weather-settings-summary');
+            const prefs = weatherDrawerState.prefs;
+            if (summary) summary.textContent = `${WEATHER_STATIONS.length}곳 중 ${WEATHER_STATIONS.length - prefs.hidden.size}곳 표시`;
+            if (!listEl) return;
+            listEl.innerHTML = prefs.order.map((id, index) => {
+                const station = weatherStationById(id);
+                if (!station) return '';
+                const on = !prefs.hidden.has(id);
+                return `
+                    <li class="weather-settings-item${on ? '' : ' off'}" data-weather-pref-id="${weatherEscape(id)}">
+                        <button type="button" class="weather-drag-handle" data-weather-pref-handle aria-label="${weatherEscape(station[1])} 순서 이동 (드래그 또는 위/아래 방향키)">
+                            <svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><g fill="currentColor"><circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></g></svg>
+                        </button>
+                        <span class="num">${index + 1}</span>
+                        <label><input type="checkbox" data-weather-pref-toggle="${weatherEscape(id)}" ${on ? 'checked' : ''}>
+                            <span><strong>${weatherEscape(station[1])}</strong> <small>${weatherEscape(station[2])}</small></span></label>
+                    </li>`;
+            }).join('');
+        }
+
+        function commitWeatherOrderFromDom(focusId) {
+            const listEl = document.getElementById('weather-settings-list');
+            weatherDrawerState.prefs.order = Array.from(listEl.querySelectorAll('[data-weather-pref-id]')).map((item) => item.dataset.weatherPrefId);
+            saveWeatherPrefs();
+            renderWeatherSettings();
+            if (focusId) listEl.querySelector(`[data-weather-pref-id="${CSS.escape(focusId)}"] [data-weather-pref-handle]`)?.focus();
+        }
+
+        // 행을 잡고(체크박스 제외) 위아래로 끌어서 순서 변경. 마우스/터치 모두 지원.
+        function initializeWeatherSettingsDrag() {
+            const listEl = document.getElementById('weather-settings-list');
+            if (!listEl) return;
+            let drag = null;
+            let suppressClick = false;
+
+            const autoScroll = (clientY) => {
+                const rect = listEl.getBoundingClientRect();
+                const edge = 36;
+                if (clientY < rect.top + edge) listEl.scrollTop -= Math.ceil((rect.top + edge - clientY) / 4);
+                else if (clientY > rect.bottom - edge) listEl.scrollTop += Math.ceil((clientY - rect.bottom + edge) / 4);
+            };
+            const reposition = (clientY) => {
+                const others = Array.from(listEl.children).filter((item) => item !== drag.item);
+                const before = others.find((item) => {
+                    const rect = item.getBoundingClientRect();
+                    return clientY < rect.top + rect.height / 2;
+                });
+                if (before) { if (drag.item.nextElementSibling !== before) listEl.insertBefore(drag.item, before); }
+                else if (listEl.lastElementChild !== drag.item) listEl.appendChild(drag.item);
+                listEl.querySelectorAll('.weather-settings-item .num').forEach((num, index) => { num.textContent = index + 1; });
+            };
+
+            listEl.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0 || event.target.closest('input')) return;
+                const item = event.target.closest('.weather-settings-item');
+                if (!item) return;
+                drag = { item, pointerId: event.pointerId, startY: event.clientY, active: false };
+                if (event.target.closest('[data-weather-pref-handle]')) event.preventDefault();
+            });
+            listEl.addEventListener('pointermove', (event) => {
+                if (!drag || event.pointerId !== drag.pointerId) return;
+                if (!drag.active) {
+                    if (Math.abs(event.clientY - drag.startY) < 5) return;
+                    drag.active = true;
+                    listEl.setPointerCapture(event.pointerId);
+                    drag.item.classList.add('dragging');
+                    listEl.classList.add('is-dragging');
+                }
+                event.preventDefault();
+                autoScroll(event.clientY);
+                reposition(event.clientY);
+            });
+            const finish = (event) => {
+                if (!drag || event.pointerId !== drag.pointerId) return;
+                const { item, active } = drag;
+                drag = null;
+                if (!active) return;
+                suppressClick = true;
+                window.setTimeout(() => { suppressClick = false; }, 0);
+                item.classList.remove('dragging');
+                listEl.classList.remove('is-dragging');
+                commitWeatherOrderFromDom();
+            };
+            listEl.addEventListener('pointerup', finish);
+            listEl.addEventListener('pointercancel', finish);
+            // 드래그 직후 라벨 클릭으로 체크가 바뀌지 않도록 막음
+            listEl.addEventListener('click', (event) => {
+                if (!suppressClick) return;
+                event.preventDefault();
+                event.stopPropagation();
+            }, true);
+            // 키보드: 손잡이에 포커스 후 위/아래 방향키
+            listEl.addEventListener('keydown', (event) => {
+                const handle = event.target.closest('[data-weather-pref-handle]');
+                if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+                event.preventDefault();
+                const item = handle.closest('.weather-settings-item');
+                const sibling = event.key === 'ArrowUp' ? item.previousElementSibling : item.nextElementSibling;
+                if (!sibling) return;
+                if (event.key === 'ArrowUp') listEl.insertBefore(item, sibling);
+                else listEl.insertBefore(sibling, item);
+                commitWeatherOrderFromDom(item.dataset.weatherPrefId);
+            });
+        }
+
+        function setWeatherSettingsOpen(open) {
+            const panel = document.getElementById('weather-settings-panel');
+            const list = document.getElementById('weather-station-list');
+            const button = document.getElementById('weather-settings-btn');
+            panel.hidden = !open;
+            list.hidden = open;
+            button.setAttribute('aria-expanded', String(open));
+            if (open) renderWeatherSettings();
+            else renderWeatherStationList();
+        }
+
+        function weatherCardMetric(label, value) {
+            return `<span class="weather-metric"><small>${weatherEscape(label)}</small><b>${weatherEscape(value)}</b></span>`;
+        }
+
+        function renderWeatherStationList() {
+            const list = document.getElementById('weather-station-list');
+            if (!list) return;
+            renderWeatherSettings();
+            const visible = weatherStationRecords();
+            if (!visible.length) {
+                list.innerHTML = '<div class="weather-empty">표시할 관측지점이 없습니다.<br>지점 설정에서 지점을 선택하세요.</div>';
+                return;
+            }
+            const rows = visible.map(({ station, record, status }) => {
+                const [id, name, kind] = station;
+                const statusMeta = WEATHER_STATUS[status];
+                const gust = record?.gust30 || record?.gust;
+                return `
+                    <tr class="status-${status}" tabindex="0" data-weather-station-id="${weatherEscape(id)}" title="클릭하면 최근 6시간 기록">
+                        <td>
+                            <span class="weather-table-station">
+                                <span class="weather-table-status"></span>
+                                <span class="weather-table-station-text"><strong>${weatherEscape(name)}</strong><small>${weatherEscape(kind)}</small></span>
+                            </span>
+                        </td>
+                        <td><span class="weather-status-badge">${statusMeta.label}</span></td>
+                        <td>${weatherEscape(weatherTimeText(record))}</td>
+                        <td>${weatherEscape(record?.windDirection || '-')}</td>
+                        <td>${weatherEscape(weatherMetricText(record?.windSpeed))}</td>
+                        <td>${weatherEscape(weatherMetricText(gust))}</td>
+                        <td>${weatherEscape(weatherMetricText(record?.waveHeight))}</td>
+                        <td>${weatherEscape(weatherMetricText(record?.waveHeightMax))}</td>
+                    </tr>`;
+            }).join('');
+            list.innerHTML = `
+                <table class="weather-observation-table" aria-label="관측지점 현황">
+                    <thead><tr><th>지점</th><th>상태</th><th>관측</th><th>풍향</th><th>풍속<br>(m/s)</th><th>돌풍<br>(m/s)</th><th>파고<br>(m)</th><th>최대파고<br>(m)</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
+        }
+
+        function collectWeatherHistory(station) {
+            const [stationId, , , source] = station;
+            const compactId = weatherCompactStationId(station);
+            const cutoff = Date.now() - WEATHER_HISTORY_WINDOW_MS;
+            const samples = new Map();
+            const add = (sample) => {
+                if (!sample || String(sample.stationId || '') !== compactId) return;
+                const observedAt = weatherObservedAt(sample);
+                if (!observedAt || observedAt.getTime() < cutoff) return;
+                samples.set(observedAt.toISOString(), { ...sample, observedAt: observedAt.toISOString() });
+            };
+
+            const remoteHistory = weatherDrawerState.cache['kma-buoy-snapshot']?.payload?.historyBySelection || {};
+            if (source === 'buoy') {
+                Object.values(remoteHistory).forEach((rows) => Array.isArray(rows) && rows.forEach(add));
+            }
+            weatherDrawerState.fastHistory.forEach((snapshot) => {
+                const sources = snapshot?.payload || {};
+                const nmpnt = sources['wb-nmpnt']?.payload;
+                const aws = sources['wb-aws']?.payload;
+                if (source === 'nm') (nmpnt?.rows || []).forEach(add);
+                if (source === 'aws') (aws?.rows || []).forEach(add);
+                if (stationId === '959') Object.values(aws?.lh || {}).forEach(add);
+            });
+            add(weatherCurrentRecord(station));
+            return Array.from(samples.values()).sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
+        }
+
+        function renderWeatherDetail(stationId) {
+            const station = WEATHER_STATIONS.find((item) => item[0] === stationId);
+            if (!station) return;
+            weatherDrawerState.selectedId = stationId;
+            const listView = document.getElementById('weather-list-view');
+            const detailView = document.getElementById('weather-detail-view');
+            const title = document.getElementById('weather-detail-title');
+            const summary = document.getElementById('weather-detail-summary');
+            const historyWrap = document.getElementById('weather-history-wrap');
+            const record = weatherCurrentRecord(station);
+            const samples = collectWeatherHistory(station);
+            listView.hidden = true;
+            detailView.hidden = false;
+            title.textContent = `${station[1]} · 최근 6시간`;
+            summary.innerHTML = `
+                <div class="weather-card-head"><strong>${weatherEscape(station[2])}</strong><span class="weather-card-time">최신 관측 ${weatherEscape(weatherTimeText(record))}</span></div>
+                <div class="weather-card-metrics">
+                    ${weatherCardMetric('풍향', record?.windDirection || '-')}
+                    ${weatherCardMetric('풍속', weatherMetricText(record?.windSpeed))}
+                    ${weatherCardMetric('돌풍', weatherMetricText(record?.gust30 || record?.gust))}
+                    ${weatherCardMetric('파고', weatherMetricText(record?.waveHeight))}
+                    ${weatherCardMetric('최대파고', weatherMetricText(record?.waveHeightMax))}
+                </div>`;
+            if (!samples.length) {
+                historyWrap.innerHTML = '<div class="weather-empty">저장된 6시간 관측기록이 아직 없습니다.</div>';
+                return;
+            }
+            historyWrap.innerHTML = `
+                <table class="weather-history-table" aria-label="${weatherEscape(station[1])} 최근 6시간 관측기록">
+                    <thead><tr><th>시각</th><th>풍향</th><th>풍속</th><th>돌풍</th><th>파고</th><th>최대파고</th><th>시정</th></tr></thead>
+                    <tbody>${samples.map((sample) => `
+                        <tr>
+                            <td>${weatherEscape(weatherTimeText(sample, true))}</td>
+                            <td>${weatherEscape(sample.windDirection || '-')}</td>
+                            <td>${weatherEscape(weatherMetricText(sample.windSpeed))}</td>
+                            <td>${weatherEscape(weatherMetricText(sample.gust30 || sample.gust))}</td>
+                            <td>${weatherEscape(weatherMetricText(sample.waveHeight))}</td>
+                            <td>${weatherEscape(weatherMetricText(sample.waveHeightMax))}</td>
+                            <td>${weatherEscape(weatherMetricText(sample.visibility))}</td>
+                        </tr>`).join('')}</tbody>
+                </table>`;
+        }
+
+        function showWeatherStationList() {
+            weatherDrawerState.selectedId = '';
+            document.getElementById('weather-list-view').hidden = false;
+            document.getElementById('weather-detail-view').hidden = true;
+        }
+
+        async function refreshWeatherDrawer({ silent = false } = {}) {
+            if (weatherDrawerState.loading) return;
+            weatherDrawerState.loading = true;
+            const refreshButton = document.getElementById('weather-refresh-btn');
+            const list = document.getElementById('weather-station-list');
+            const meta = document.getElementById('weather-drawer-meta');
+            if (refreshButton) refreshButton.disabled = true;
+            if (!silent && list && !Object.keys(weatherDrawerState.cache).length) {
+                list.innerHTML = '<div class="weather-empty">관측자료와 6시간 기록을 불러오는 중입니다.</div>';
+            }
+            try {
+                const headers = { apikey: WEATHER_SUPABASE_KEY, Authorization: `Bearer ${WEATHER_SUPABASE_KEY}` };
+                const cacheIds = ['kma-buoy-snapshot', 'wb-nmpnt', 'wb-aws'];
+                const cacheUrl = `${WEATHER_SUPABASE_URL}/rest/v1/external_api_cache?select=id,payload,fetchedAt&id=in.(${cacheIds.join(',')})`;
+                const historyUrl = new URL(`${WEATHER_SUPABASE_URL}/rest/v1/weather_board_history`);
+                historyUrl.searchParams.set('select', 'captured_at,payload');
+                historyUrl.searchParams.set('captured_at', `gte.${new Date(Date.now() - WEATHER_HISTORY_WINDOW_MS).toISOString()}`);
+                historyUrl.searchParams.set('order', 'captured_at.asc');
+                const [cacheResponse, historyResponse] = await Promise.all([
+                    fetch(cacheUrl, { headers, cache: 'no-store' }),
+                    fetch(historyUrl.toString(), { headers, cache: 'no-store' })
+                ]);
+                if (!cacheResponse.ok) throw new Error(`관측자료 서버 응답 ${cacheResponse.status}`);
+                const cacheRows = await cacheResponse.json();
+                weatherDrawerState.cache = Object.fromEntries(cacheRows.map((row) => [row.id, row]));
+                weatherDrawerState.fastHistory = historyResponse.ok ? await historyResponse.json() : [];
+                weatherDrawerState.fetchedAt = cacheRows.reduce((latest, row) => row.fetchedAt > latest ? row.fetchedAt : latest, '');
+                const shown = weatherStationRecords();
+                const available = shown.filter((item) => item.record).length;
+                const fetchedText = weatherDrawerState.fetchedAt
+                    ? new Date(weatherDrawerState.fetchedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' })
+                    : '-';
+                meta.textContent = `${available}/${shown.length}곳 자료 · 서버 갱신 ${fetchedText}`;
+                renderWeatherStationList();
+                if (weatherDrawerState.selectedId) renderWeatherDetail(weatherDrawerState.selectedId);
+            } catch (error) {
+                if (list) list.innerHTML = `<div class="weather-drawer-error">관측자료를 불러오지 못했습니다.<br>${weatherEscape(error.message)}</div>`;
+                if (meta) meta.textContent = '관측자료 연결 실패';
+            } finally {
+                weatherDrawerState.loading = false;
+                if (refreshButton) refreshButton.disabled = false;
+            }
+        }
+
+        // EXE(Electron): 패널은 별도 창(?weatherPanel=1)으로 띄워 앱 창 뒤에서 왼쪽으로 미끄러져 나온다.
+        const IS_WEATHER_PANEL_WINDOW = new URLSearchParams(location.search).get('weatherPanel') === '1';
+        const USE_WEATHER_PANEL_WINDOW = Boolean(ipcRenderer) && !IS_WEATHER_PANEL_WINDOW;
+
+        function setWeatherDrawerOpen(open) {
+            const drawer = document.getElementById('weather-drawer');
+            const toggle = document.getElementById('weather-drawer-toggle');
+            weatherDrawerState.open = Boolean(open);
+            if (IS_WEATHER_PANEL_WINDOW && !weatherDrawerState.open) {
+                weatherDrawerState.open = true;
+                ipcRenderer?.send('weather-panel-close');
+                return;
+            }
+            if (USE_WEATHER_PANEL_WINDOW) {
+                drawer.classList.toggle('open', weatherDrawerState.open);
+                toggle.setAttribute('aria-expanded', String(weatherDrawerState.open));
+                toggle.title = weatherDrawerState.open ? '관측지점 정보 닫기' : '관측지점 정보 열기';
+                ipcRenderer.invoke('weather-panel-set', { open: weatherDrawerState.open }).catch(() => null);
+                return;
+            }
+            drawer.classList.toggle('open', weatherDrawerState.open);
+            drawer.setAttribute('aria-hidden', String(!weatherDrawerState.open));
+            toggle.setAttribute('aria-expanded', String(weatherDrawerState.open));
+            toggle.title = weatherDrawerState.open ? '관측지점 정보 닫기' : '관측지점 정보 열기';
+            if (weatherDrawerState.open && !Object.keys(weatherDrawerState.cache).length) refreshWeatherDrawer();
+        }
+
+        function initializeWeatherDrawer() {
+            const toggle = document.getElementById('weather-drawer-toggle');
+            const refreshButton = document.getElementById('weather-refresh-btn');
+            const list = document.getElementById('weather-station-list');
+            const back = document.getElementById('weather-detail-back');
+            const settingsButton = document.getElementById('weather-settings-btn');
+            const settingsPanel = document.getElementById('weather-settings-panel');
+            weatherDrawerState.prefs = loadWeatherPrefs();
+            renderWeatherSettings();
+            if (IS_WEATHER_PANEL_WINDOW) {
+                document.body.classList.add('weather-panel-window');
+                const drawer = document.getElementById('weather-drawer');
+                drawer.classList.add('open');
+                drawer.setAttribute('aria-hidden', 'false');
+                weatherDrawerState.open = true;
+                ipcRenderer?.on('weather-panel-shown', () => {
+                    weatherDrawerState.prefs = loadWeatherPrefs();
+                    refreshWeatherDrawer({ silent: Object.keys(weatherDrawerState.cache).length > 0 });
+                });
+            }
+            if (USE_WEATHER_PANEL_WINDOW) {
+                document.body.classList.add('weather-panel-host');
+                ipcRenderer.on('weather-panel-state', (_event, open) => {
+                    if (weatherDrawerState.open === Boolean(open)) return;
+                    weatherDrawerState.open = Boolean(open);
+                    const drawer = document.getElementById('weather-drawer');
+                    drawer.classList.toggle('open', weatherDrawerState.open);
+                    toggle?.setAttribute('aria-expanded', String(weatherDrawerState.open));
+                });
+            }
+            toggle?.addEventListener('click', () => setWeatherDrawerOpen(!weatherDrawerState.open));
+            refreshButton?.addEventListener('click', () => refreshWeatherDrawer());
+            settingsButton?.addEventListener('click', () => setWeatherSettingsOpen(settingsPanel.hidden));
+            settingsPanel?.addEventListener('change', (event) => {
+                const id = event.target.dataset?.weatherPrefToggle;
+                if (!id) return;
+                if (event.target.checked) weatherDrawerState.prefs.hidden.delete(id);
+                else weatherDrawerState.prefs.hidden.add(id);
+                saveWeatherPrefs();
+                renderWeatherSettings();
+            });
+            settingsPanel?.addEventListener('click', (event) => {
+                const prefs = weatherDrawerState.prefs;
+                const action = event.target.closest('[data-weather-settings]')?.dataset.weatherSettings;
+                if (!action) return;
+                if (action === 'done') { setWeatherSettingsOpen(false); return; }
+                if (action === 'all') prefs.hidden.clear();
+                if (action === 'none') prefs.order.forEach((id) => prefs.hidden.add(id));
+                if (action === 'reset') {
+                    prefs.order = WEATHER_STATIONS.map((station) => station[0]);
+                    prefs.hidden.clear();
+                }
+                saveWeatherPrefs();
+                renderWeatherSettings();
+            });
+            initializeWeatherSettingsDrag();
+            list?.addEventListener('click', (event) => {
+                const card = event.target.closest('[data-weather-station-id]');
+                if (card) renderWeatherDetail(card.dataset.weatherStationId);
+            });
+            list?.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                const row = event.target.closest('tr[data-weather-station-id]');
+                if (!row) return;
+                event.preventDefault();
+                renderWeatherDetail(row.dataset.weatherStationId);
+            });
+            back?.addEventListener('click', showWeatherStationList);
+            document.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape' || !weatherDrawerState.open) return;
+                if (weatherDrawerState.selectedId) showWeatherStationList();
+                else setWeatherDrawerOpen(false);
+            });
+            window.setInterval(() => {
+                if (weatherDrawerState.open) refreshWeatherDrawer({ silent: true });
+            }, 60 * 1000);
+        }
+
         const getMaximizedPopupFeatures = () => {
             const width = Math.max(800, Number(window.screen?.availWidth) || 1280);
             const height = Math.max(600, Number(window.screen?.availHeight) || 900);
@@ -5252,7 +6094,8 @@
         // ====================================================================
         
         // 애플리케이션 시작
-        window.onload = initializeFirebase;
+        initializeWeatherDrawer();
+        if (!IS_WEATHER_PANEL_WINDOW) window.onload = initializeFirebase;
     </script>
 </body>
 </html>

@@ -368,6 +368,9 @@ function setupIpcListeners() {
             windowRef.close();
         }
     });
+    // 관측지점 패널 창 열기/닫기
+    ipcMain.handle('weather-panel-set', (_event, { open }) => setWeatherPanelOpen(Boolean(open)));
+    ipcMain.on('weather-panel-close', () => { setWeatherPanelOpen(false); });
     ipcMain.on('install-update-now', () => {
         autoUpdater.quitAndInstall();
     });
@@ -564,6 +567,141 @@ function setupAutoUpdater(mainWindow) {
     autoUpdater.checkForUpdates();
 }
 
+// ===============================================================
+// 1.2 관측지점 패널 창: 앱 창 뒤에서 왼쪽으로 미끄러져 나오는 별도 창
+//     (앱 창은 크기·위치를 바꾸지 않고, 패널 창은 이동만 하므로 떨림이 없다)
+// ===============================================================
+const WEATHER_PANEL_WIDTH = 600;
+const weatherPanel = { win: null, open: false, timer: null, ready: null };
+
+function getWeatherPanelWindow() {
+    if (weatherPanel.win && !weatherPanel.win.isDestroyed()) return weatherPanel.win;
+    const base = MAIN_WINDOW.getBounds();
+    const win = new BrowserWindow({
+        width: WEATHER_PANEL_WIDTH,
+        height: base.height,
+        x: base.x,
+        y: base.y,
+        frame: false,
+        show: false,
+        skipTaskbar: true,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        title: '관측지점 정보',
+        backgroundColor: '#f7f3e9',
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+        }
+    });
+    win.setMenu(null);
+    weatherPanel.ready = new Promise((resolve) => win.webContents.once('did-finish-load', resolve));
+    win.loadFile(path.join(__dirname, 'index.html'), { query: { weatherPanel: '1' } });
+    win.on('closed', () => {
+        weatherPanel.win = null;
+        weatherPanel.open = false;
+        notifyWeatherPanelState();
+    });
+    weatherPanel.win = win;
+    return win;
+}
+
+function weatherPanelPositions() {
+    const base = MAIN_WINDOW.getBounds();
+    const { workArea } = screen.getDisplayMatching(base);
+    // 숨김 위치: 앱 창 바로 뒤(앱 창 폭 안쪽), 열림 위치: 앱 창 왼쪽 바깥
+    const hiddenX = base.x + Math.max(0, base.width - WEATHER_PANEL_WIDTH);
+    const openX = Math.max(workArea.x, base.x - WEATHER_PANEL_WIDTH);
+    return { hiddenX, openX, y: base.y, height: base.height };
+}
+
+function notifyWeatherPanelState() {
+    if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
+        MAIN_WINDOW.webContents.send('weather-panel-state', weatherPanel.open);
+    }
+}
+
+function slideWeatherPanel(win, fromX, toX, y, duration = 300) {
+    if (weatherPanel.timer) clearInterval(weatherPanel.timer);
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const ease = (t) => 1 - Math.pow(1 - t, 3);
+        weatherPanel.timer = setInterval(() => {
+            if (win.isDestroyed()) {
+                clearInterval(weatherPanel.timer);
+                weatherPanel.timer = null;
+                resolve(false);
+                return;
+            }
+            const t = Math.min(1, (Date.now() - startedAt) / duration);
+            win.setPosition(Math.round(fromX + (toX - fromX) * ease(t)), y);
+            if (t >= 1) {
+                clearInterval(weatherPanel.timer);
+                weatherPanel.timer = null;
+                resolve(true);
+            }
+        }, 1000 / 60);
+    });
+}
+
+async function setWeatherPanelOpen(open) {
+    if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return { ok: false };
+    const win = getWeatherPanelWindow();
+    await weatherPanel.ready;
+    weatherPanel.open = open;
+    notifyWeatherPanelState();
+    const pos = weatherPanelPositions();
+    if (open) {
+        const startX = win.isVisible() ? win.getPosition()[0] : pos.hiddenX;
+        win.setBounds({ x: startX, y: pos.y, width: WEATHER_PANEL_WIDTH, height: pos.height });
+        if (!win.isVisible()) {
+            win.showInactive();
+            win.webContents.send('weather-panel-shown');
+        }
+        MAIN_WINDOW.moveTop(); // 패널은 앱 창 뒤에서 나온다
+        await slideWeatherPanel(win, startX, pos.openX, pos.y);
+        return { ok: true };
+    }
+    if (!win.isVisible()) return { ok: true };
+    MAIN_WINDOW.moveTop();
+    const done = await slideWeatherPanel(win, win.getPosition()[0], pos.hiddenX, pos.y);
+    if (done && !weatherPanel.open && !win.isDestroyed()) win.hide();
+    return { ok: true };
+}
+
+function attachWeatherPanelToMainWindow(mainWindow) {
+    const follow = () => {
+        const win = weatherPanel.win;
+        if (!win || win.isDestroyed() || !weatherPanel.open || weatherPanel.timer) return;
+        const pos = weatherPanelPositions();
+        win.setBounds({ x: pos.openX, y: pos.y, width: WEATHER_PANEL_WIDTH, height: pos.height });
+    };
+    mainWindow.on('move', follow);
+    mainWindow.on('resize', follow);
+    mainWindow.on('minimize', () => {
+        if (weatherPanel.win && !weatherPanel.win.isDestroyed()) weatherPanel.win.hide();
+    });
+    mainWindow.on('restore', () => {
+        const win = weatherPanel.win;
+        if (!win || win.isDestroyed() || !weatherPanel.open) return;
+        follow();
+        win.showInactive();
+        mainWindow.moveTop();
+    });
+    // 앱 창을 클릭해 앞으로 가져오면 패널도 함께 앞으로
+    mainWindow.on('focus', () => {
+        const win = weatherPanel.win;
+        if (!win || win.isDestroyed() || !weatherPanel.open || !win.isVisible()) return;
+        win.moveTop();
+        mainWindow.moveTop();
+    });
+    mainWindow.on('closed', () => {
+        if (weatherPanel.win && !weatherPanel.win.isDestroyed()) weatherPanel.win.destroy();
+    });
+}
+
 function createWindow(initialAppId) {
     const primaryDisplay = screen.getPrimaryDisplay();
     const { width, height } = primaryDisplay.workAreaSize;
@@ -598,6 +736,7 @@ function createWindow(initialAppId) {
     });
 
     MAIN_WINDOW = mainWindow;
+    attachWeatherPanelToMainWindow(mainWindow);
 
     // ready-to-show 이벤트
     mainWindow.on('ready-to-show', () => {
